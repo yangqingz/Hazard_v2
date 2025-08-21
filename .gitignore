@@ -21,3 +21,4 @@ results/
 results_old/*
 *.log
 baselines/*
+build/

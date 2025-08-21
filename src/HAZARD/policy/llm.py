@@ -1,6 +1,8 @@
 import pdb
 import tiktoken
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key=None)
 import json
 import os
 import pandas as pd
@@ -9,7 +11,7 @@ import random
 from openai import OpenAIError
 import backoff
 import time
-
+import torch
 
 class SamplingParameters:
     def __init__(self, debug=False, max_tokens=64, t=0.7, top_p=1.0, n=1, logprobs=1, echo=False):
@@ -41,7 +43,6 @@ class LLM:
             self.apikey_list = [api_key]
         self.model_and_tokenizer_path = model_and_tokenizer_path
         self.apikey_idx = 0
-        openai.api_key = self.apikey_list[self.apikey_idx]
         self.agent_type = "llm"
         self.task = task
         assert task in ['fire', 'flood', 'wind']
@@ -53,14 +54,24 @@ class LLM:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = 'gpt-3.5-turbo' in lm_id or 'gpt-4' in lm_id
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
 
         if self.source == 'openai':
-            tiktoken.get_encoding("cl100k_base")
-            self.tokenizer = tiktoken.encoding_for_model(self.lm_id)
-            if self.chat:
+            try:
+                self.tokenizer = tiktoken.encoding_for_model(self.lm_id)
+            except Exception:
+                # o1-preview (and most chat models) use cl100k_base
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+
+            if self.lm_id == 'o1-preview':
+                self.sampling_params = {
+                    "temperature": 1,
+                    "top_p": sampling_parameters.top_p,
+                    "n": sampling_parameters.n,
+                }
+            elif self.chat:
                 self.sampling_params = {
                     "max_tokens": sampling_parameters.max_tokens,
                     "temperature": sampling_parameters.t,
@@ -81,8 +92,9 @@ class LLM:
             assert model_and_tokenizer_path != ""
             # model_name = "meta-llama/Llama-2-7b-chat-hf"
             self.model = AutoModelForCausalLM.from_pretrained(model_and_tokenizer_path, device_map="auto",
-                                                              load_in_4bit=True)
-            self.tokenizer = AutoTokenizer.from_pretrained(model_and_tokenizer_path, add_special_tokens=False,
+                                                              load_in_4bit=False,max_memory={0: "18GB", "cpu": "6GB"},
+    torch_dtype=torch.float16)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_and_tokenizer_path, 
                                                            use_fast=True)
             self.sampling_params = {
                 "max_tokens": sampling_parameters.max_tokens,
@@ -108,31 +120,28 @@ class LLM:
                     prompt[0]["content"] = base_prompt
                     try:
                         if self.chat:
-                            response = openai.ChatCompletion.create(
-                                model=lm_id, messages=prompt, **sampling_params
-                            )
+                            response = client.chat.completions.create(model=lm_id, messages=prompt, **sampling_params)
                             # print(json.dumps(response, indent=4))
                             if self.debug:
-                                with open(f"llm_configs/chat_raw.json", 'a') as f:
-                                    f.write(json.dumps(response, indent=4))
+                                with open(f"src/HAZARD/policy/llm_configs/chat_raw.json", 'a') as f:
+                                    f.write(response.model_dump_json(indent=4)) 
                                     f.write('\n')
-                            generated_samples = [response['choices'][i]['message']['content'] for i in
+                            generated_samples = [response.choices[i].message.content for i in
                                                  range(sampling_params['n'])]
-                            if 'gpt-4' in self.lm_id:
-                                usage = response['usage']['prompt_tokens'] * 0.03 / 1000 + response['usage'][
-                                    'completion_tokens'] * 0.06 / 1000
+                            if 'gpt-4' in self.lm_id or 'o4-mini' in self.lm_id:
+                                usage = response.usage.prompt_tokens * 0.03 / 1000 + response.usage.completion_tokens * 0.06 / 1000
                             elif 'gpt-3.5' in self.lm_id:
-                                usage = response['usage']['total_tokens'] * 0.002 / 1000
+                                usage = response.usage.total_tokens * 0.002 / 1000
                         # mean_log_probs = [np.mean(response['choices'][i]['logprobs']['token_logprobs']) for i in
                         # 				  range(sampling_params['n'])]
                         elif "text-" in lm_id:
-                            response = openai.Completion.create(model=lm_id, prompt=prompt, **sampling_params)
+                            response = client.completions.create(model=lm_id, prompt=prompt, **sampling_params)
                             # print(json.dumps(response, indent=4))
                             if self.debug:
                                 with open(f"output/raw.json", 'a') as f:
-                                    f.write(json.dumps(response, indent=4))
+                                    print(response.model_dump_json(indent=4))
                                     f.write('\n')
-                            generated_samples = [response['choices'][i]['text'] for i in range(sampling_params['n'])]
+                            generated_samples = [response.choices[i].text for i in range(sampling_params['n'])]
                         # mean_log_probs = [np.mean(response['choices'][i]['logprobs']['token_logprobs']) for i in
                         # 			  range(sampling_params['n'])]
                         else:
@@ -156,10 +165,6 @@ class LLM:
                                                      top_p=self.sampling_params['top_p'])
                         generated_samples = [self.tokenizer.decode(output[0][model_inputs.input_ids.shape[1]:],
                                                                    skip_special_tokens=True)]
-                        if self.debug:
-                            with open(f"llm_configs/chat_raw.json", 'a') as f:
-                                f.write(json.dumps(generated_samples[0], indent=4))
-                                f.write('\n')
                     else:
                         raise ValueError("Can not use non-chat huggingface models")
                 else:
@@ -189,7 +194,6 @@ class LLM:
         self.apikey_idx += 1
         if self.apikey_idx >= len(self.apikey_list):
             self.apikey_idx = 0
-        openai.api_key = self.apikey_list[self.apikey_idx]
         time.sleep(sleep_time)
 
     def cut_prompt_with_given_positions(self, position1, position2, prompt):

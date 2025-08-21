@@ -337,17 +337,17 @@ class Challenge:
                 elif current_action[0] == "walk_to":
                     if self.record_with_agents:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                                   max_steps=100, reset_arms=False, arrived_at=0.5,
+                                                                   max_steps=100, reset_arms=False, arrived_at=1,
                                                                    task=self.env_name, record_mode=True,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                                   effect_on_agents=self.effect_on_agents, output_dir=self.output_dir)
                     elif self.env_name in ["fire", "flood"]:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                               max_steps=100, reset_arms=False, arrived_at=0.5, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                               max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
+                                                                   effect_on_agents=self.effect_on_agents,output_dir=self.output_dir)
                     else:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                               max_steps=100, reset_arms=False, arrived_at=0.5, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                               max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
+                                                                   effect_on_agents=self.effect_on_agents,output_dir=self.output_dir)
                     if action_result:
                         self.nearest_object = int(current_action[1])
                     else:

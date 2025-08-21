@@ -4,7 +4,7 @@ import inflect
 from policy.llm_v2 import LLMv2
 
 class LLMv3(LLMv2):
-    def __init__(self, reasoner_prompt_path = "policy/llm_configs/prompt_v2.csv", **kwargs):
+    def __init__(self, reasoner_prompt_path = "src/HAZARD/policy/llm_configs/prompt_v2.csv", **kwargs):
         super().__init__(**kwargs)
         self.env_change_record = {}
         self.last_seen_object = {}

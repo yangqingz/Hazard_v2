@@ -11,7 +11,7 @@ from policy.record_agent import RecordAgent
 from policy.rl import RLAgent
 from policy.rand import RandomAgent
 from policy.custom import CustomAgent
-from policy.oracal import OracleAgent
+# from policy.oracal import OracleAgent
 from datetime import datetime
 import os
 
@@ -72,8 +72,8 @@ def get_examplar_agent(agent_name="mcts", api_key="", api_key_file="", debug=Fal
         return GreedyAgent(task=env_name)
     elif agent_name == "record":
         return RecordAgent(task=env_name)
-    elif agent_name == "oracle":
-        return OracleAgent(task=env_name)
+    # elif agent_name == "oracle":
+    #     return OracleAgent(task=env_name)
     elif agent_name == "rl":
         return RLAgent(task=env_name)
     elif agent_name == "random":
@@ -145,7 +145,7 @@ def submit(
         agent_policy = get_examplar_agent(agent_name=agent, api_key=api_key, api_key_file=api_key_file, debug=debug,
                                           max_tokens=max_tokens, lm_source=lm_source, lm_id=lm_id,
                                           model_and_tokenizer_path=model_and_tokenizer_path, env_name=env_name,
-                                          prompt_path="policy/llm_configs/prompt_v2.csv")
+                                          prompt_path="src/HAZARD/policy/llm_configs/prompt_v2.csv")
 
         if agent == "rl":
             challenge = Challenge(env_name=env_name, data_dir=data_dir, output_dir=output_dir,
