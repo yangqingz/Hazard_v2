@@ -202,11 +202,14 @@ class Challenge:
                 else:
                     value = self.low_value
                 if self.target_status[target]:
+                    print("picking up target:", name)
                     if self.env_name == "fire":
                         if self.env.controller.manager.objects[target].state == FireObjectState.NORMAL:
                             total_score += value
+                            print("normal, so total score:", total_score)
                         else:
                             total_score += value * 0.5
+                            print("not normal, so total score:", total_score)
                         self.final_states[target] = self.env.controller.manager.objects[target].state.value
                     elif self.env_name == "flood":
                         if name in waterproof_dict:
@@ -224,6 +227,7 @@ class Challenge:
                         total_score += value
                         self.final_states[target] = 0
                 max_score += value
+                print("target:", name, 'with value:', value, 'total score:', total_score, 'max score:', max_score)
         else:
             total_score = 0
             max_score = 1

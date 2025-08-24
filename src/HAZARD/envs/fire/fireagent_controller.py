@@ -10,6 +10,7 @@ from tdw.scene_data.scene_bounds import SceneBounds
 from tdw.obi_data.fluids.cube_emitter import CubeEmitter
 from tdw.add_ons.obi import Obi
 
+from PIL import Image
 import numpy as np
 import cv2
 import copy
@@ -86,10 +87,10 @@ class FireAgentController(FireController):
         self.communicate([])
 
     def update_replicant_url(self):
-        if not os.path.isfile(f"{os.getcwd()}/data/assets/replicant_0"): # There is no local model of replicant
+        if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/fireman"):#e is no local model of replicant
             print("There is no local model of replicant. ")
             return
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME] = HumanoidLibrarian(Replicant.LIBRARY_NAME)
         import platform
         for repli in ["replicant_0", "fireman"]:
@@ -184,6 +185,7 @@ class FireAgentController(FireController):
 
         if not self.record_only:
             if len(self.agents) == 0:
+                # adding agent 
                 self.agents: List[FireAgent] = []
                 for agent_pos in setup.agent_positions:
                     idx = self.get_unique_id()
@@ -361,16 +363,6 @@ class FireAgentController(FireController):
         camera_matrix = self.agents[idx].dynamic.camera_matrix
 
         point_cloud = TDWUtils.get_point_cloud(depth=depth, camera_matrix=camera_matrix, vfov=120.0)
-        # fout = open("point_cloud.txt", "w")
-        # bs, h, w = 1, height, width
-        # for i in range(bs):
-        #     for j in range(h):
-        #         for k in range(w):
-        #             for t in range(3):
-        #                 print(point_cloud[t, j, k].item(), end=' ', file=fout)
-        #             print('', file=fout)
-        # shape: (3, 512, 512)
-        # down sample to 16x16
         point_cloud = point_cloud[:, ::(width//16), ::(width//16)]
         temp = np.zeros((16, 16))
         for i in range(16):
@@ -385,19 +377,19 @@ class FireAgentController(FireController):
         return self.manager.find_nearest_object(pos=current_position, objects=objects)
 
     def replace_with_local_path(self, commands):
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         download_cmds = []
         for command in commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
         for command in self.commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
@@ -409,12 +401,12 @@ class FireAgentController(FireController):
             for command in add_on_commands:
                 if 'url' in command and "amazonaws.com" in command['url']:
                     new_url = command['url'].split("/")[-1]
-                    if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                    if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                         download_cmds.append(f"wget {command['url']}\n")
                     new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                     command['url'] = new_url
         if len(download_cmds) > 0:
-            fout = open(f"{os.getcwd()}/data/assets/download_assets.sh", "w")
+            fout = open(f"{os.getcwd()}/src/HAZARD/data/assets/download_assets.sh", "w")
             for cmd in download_cmds:
                 fout.write(cmd)
             super().communicate({"$type": "terminate"})

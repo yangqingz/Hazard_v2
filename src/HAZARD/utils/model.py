@@ -151,7 +151,7 @@ class PointCloud:
         # x axes are same, hence y axis is reversed as well.
         # Source: https://learnopengl.com/Getting-started/Camera
         rot = torch.Tensor([[1, 0, 0, 0],
-                        [0, 1, 0, 0],
+                        [0, -1, 0, 0],
                         [0, 0, -1, 0],
                         [0, 0, 0, 1]]).to(device)
         camera_matrix = torch.matmul(camera_matrix, rot)

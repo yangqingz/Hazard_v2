@@ -64,12 +64,12 @@ class FloodAgentController(FloodController):
         # self.init_seg()
 
     def update_replicant_url(self):
-        if not os.path.isfile(f"{os.getcwd()}/data/assets/replicant_0"): # There is no local model of replicant
+        if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/fireman"): # There is no local model of replicant
             print("There is no local model of replicant. ")
             return
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME] = HumanoidLibrarian(Replicant.LIBRARY_NAME)
-        record = Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME].get_record("replicant_0")
+        record = Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME].get_record("fireman")
         import platform
         new_url = record.urls[platform.system()].split("/")[-1]
         record.urls[platform.system()] = f"{LOCAL_PATH_PREFIX}/{new_url}"
@@ -349,19 +349,19 @@ class FloodAgentController(FloodController):
         return self.manager.find_nearest_object(pos=current_position, objects=objects)
 
     def replace_with_local_path(self, commands):
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         download_cmds = []
         for command in commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget -nc {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
         for command in self.commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget -nc {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
@@ -373,12 +373,12 @@ class FloodAgentController(FloodController):
             for command in add_on_commands:
                 if 'url' in command and "amazonaws.com" in command['url']:
                     new_url = command['url'].split("/")[-1]
-                    if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                    if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                         download_cmds.append(f"wget -nc {command['url']}\n")
                     new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                     command['url'] = new_url
         if len(download_cmds) > 0:
-            fout = open(f"{os.getcwd()}/data/assets/download_assets.sh", "w")
+            fout = open(f"{os.getcwd()}/src/HAZARD/data/assets/download_assets.sh", "w")
             for cmd in download_cmds:
                 fout.write(cmd)
             print("Please run data/assets/download_assets.sh first!")

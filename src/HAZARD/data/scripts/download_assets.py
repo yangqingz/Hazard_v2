@@ -19,7 +19,7 @@ def get_args():
     parser.add_argument(
         '--floorplan', type=str, default="2b")
     parser.add_argument(
-        '--download_dir', type=str, default="assets")
+        '--download_dir', type=str, default="../assets")
     parser.add_argument(
         '--layout', type=int, default=0)
     args = parser.parse_args()
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     args = get_args()
     if not os.path.exists(args.download_dir):
         os.mkdir(args.download_dir)
-    output_scripts = open("../download_script.sh", "w")
+    output_scripts = open("/home/yangqingzheng/HAZARD/download_script.sh", "w")
     platform_convert_dict = {
         "osx": "Darwin",
         "windows": "Windows",
@@ -65,7 +65,9 @@ if __name__ == "__main__":
 
     urls = []
     for command in commands:
-        if 'url' in command and 'amazon' in command['url'] and command['url'] not in urls:
-            urls.append(command['url'])
-            new_url = modify_platform(command['url'], args.platform)
-            output_scripts.write(f"wget -nc {new_url} -P {args.download_dir}\n")
+        if 'url' in command:
+            if command['url'] not in urls:
+                print(command['url'])
+                urls.append(command['url'])
+                new_url = modify_platform(command['url'], args.platform)
+                output_scripts.write(f"wget -nc {new_url} -P {args.download_dir}\n")

@@ -245,7 +245,7 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100,
                     chosen_idx = i
                     break
 
-            next_real = env.controller.grid_to_real(path[chosen_idx])
+            next_real = env.controller.grid_to_real(path[1])
             if next_real is None:
                 print("grid_to_real returned None; skipping move.")
             else:
@@ -260,7 +260,7 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100,
                     params={
                         "target": target_vec3,
                         "reset_arms": reset_arms,
-                        "arrived_at": 1 if record_mode else 1
+                        "arrived_at": 0.05 if record_mode else 0.5
                     }
                 )
 
