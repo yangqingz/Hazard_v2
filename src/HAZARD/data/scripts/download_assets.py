@@ -39,7 +39,7 @@ if __name__ == "__main__":
     args = get_args()
     if not os.path.exists(args.download_dir):
         os.mkdir(args.download_dir)
-    output_scripts = open("/home/yangqingzheng/HAZARD/download_script.sh", "w")
+    output_scripts = open("../download_script.sh", "w")
     platform_convert_dict = {
         "osx": "Darwin",
         "windows": "Windows",
@@ -53,8 +53,16 @@ if __name__ == "__main__":
     #     url = Controller.SCENE_LIBRARIANS[library].get_record(scene_name).urls[platform_convert_dict[args.platform]]
     #     output_scripts.write(f"wget {url} -P {args.download_dir}\n")
     #     exit(0)
-
-    commands = json.load(open(args.json_path))
+    commands = []
+    with open(args.json_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                cmds = json.loads(line)
+                if isinstance(cmds, list):
+                    commands.extend(cmds)
+                else:
+                    commands.append(cmds)
 
     # Controller.SCENE_LIBRARIANS[library] = SceneLibrarian(library)
     # Controller.SCENE_LIBRARIANS[library].get_record(scene_name).urls[platform_convert_dict[args.platform]] = \
@@ -65,9 +73,7 @@ if __name__ == "__main__":
 
     urls = []
     for command in commands:
-        if 'url' in command:
-            if command['url'] not in urls:
-                print(command['url'])
-                urls.append(command['url'])
-                new_url = modify_platform(command['url'], args.platform)
-                output_scripts.write(f"wget -nc {new_url} -P {args.download_dir}\n")
+        if 'url' in command and 'amazon' in command['url'] and command['url'] not in urls:
+            urls.append(command['url'])
+            new_url = modify_platform(command['url'], args.platform)
+            output_scripts.write(f"wget -nc {new_url} -P {args.download_dir}\n")

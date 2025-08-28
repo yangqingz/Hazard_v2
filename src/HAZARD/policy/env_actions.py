@@ -182,93 +182,52 @@ def save_path_map(env,
     cv2.imwrite(out_path, bgr)
     return out_path
  
-"""this action is environment independent"""
 # def agent_walk_to(env: WindEnv, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0):
-def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100,
-                  reset_arms: bool = False, arrived_at=1.0,
-                  task=None, effect_on_agents=False, record_mode=False, output_dir=None):
-
+def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0,
+                task=None, effect_on_agents=False, record_mode=False):
+    # visualize_obs(env, None, suffix="0")
     start_frame = env.controller.frame_count
     if record_mode and task != "wind":
         env.controller.agents[0].collision_detection.avoid = False
         env.controller.agents[0].collision_detection.objects = False
 
-    MIN_STEP_M = 1.0  # <-- real-world meters
-
     while True:
-        # --- keep REAL positions separate ---
-        agent_real = np.asarray(env.controller.agents[0].dynamic.transform.position, dtype=float)
-        if isinstance(target, int):
-            target_real = np.asarray(env.controller.manager.objects[target].position, dtype=float)
-        else:
-            target_real = np.asarray(target, dtype=float)
-
-        # success in REAL space (XZ)
-        if np.linalg.norm(agent_real[[0, 2]] - target_real[[0, 2]]) < arrived_at:
+        agent_pos = env.controller.agents[0].dynamic.transform.position
+        target_pos = env.controller.manager.objects[target].position if isinstance(target, int) else np.array(target)
+        if np.linalg.norm(agent_pos[[0, 2]] - target_pos[[0, 2]]) < arrived_at:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
             return True, "success"
-
+        
         if env.controller.frame_count - start_frame > max_steps:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
             return False, "max steps reached"
-
-        # --- grid only for planning ---
-        agent_grid = env.controller.real_to_grid(agent_real)
-        target_grid = env.controller.real_to_grid(target_real)
-
+        
+        agent_pos = env.controller.real_to_grid(agent_pos)
+        target_pos = env.controller.real_to_grid(target_pos)
         obs = env.controller._obs()
         sem_map = obs["sem_map"]
         if isinstance(target, int) and not np.any(sem_map["id"] == env.controller.manager.id_renumbering[target]):
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
             return False, "target not in vision or memory"
-
-        weight = get_astar_weight(sem_map=sem_map, origin=agent_grid, destination=target_grid)
-        path = get_astar_path(weight=weight, origin=agent_grid, destination=target_grid)
-        save_path_map(env=env, astar_path=path,save_dir=output_dir)
-        if not path:
-            print("No path found.")
-        else:
-            # choose first waypoint whose REAL XZ distance from current agent ≥ 1.0 m
-            chosen_idx = len(path) - 1  # fallback: final node
-            start_i = 1 if len(path) > 1 else 0
-
-            for i in range(start_i, len(path)):
-                p_real = env.controller.grid_to_real(path[i])
-                if p_real is None:
-                    continue
-                d = np.linalg.norm(agent_real[[0, 2]] - np.asarray([p_real[0], p_real[2]], dtype=float))
-                print(f"candidate idx {i} real step = {d:.3f} m")
-                if d >= MIN_STEP_M:
-                    chosen_idx = i
-                    break
-
-            next_real = env.controller.grid_to_real(path[1])
-            if next_real is None:
-                print("grid_to_real returned None; skipping move.")
-            else:
-                # keep Y from current agent if next_real lacks a good Y
-                y = float(agent_real[1]) if len(agent_real) > 1 else 0.0
-                tx, tz = float(next_real[0]), float(next_real[2])
-                target_vec3 = TDWUtils.array_to_vector3([tx, y, tz])
-
-                env.controller.do_action(
-                    agent_idx=0,
-                    action="move_to",
-                    params={
-                        "target": target_vec3,
-                        "reset_arms": reset_arms,
-                        "arrived_at": 0.05 if record_mode else 0.5
-                    }
-                )
-
-        # advance sim
+        weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
+        path = get_astar_path(weight=weight, origin=agent_pos, destination=target_pos)
+        # visualize_obs(env, obs, suffix=str(env.controller.frame_count), astar_path=path)
+        # walk to first point
+        if path is None or len(path) <= 1:
+            env.controller.agents[0].collision_detection.avoid = True
+            env.controller.agents[0].collision_detection.objects = True
+            return False, "don't know, maybe out of bounds"
+        env.controller.do_action(agent_idx=0, action="move_to", params={"target": TDWUtils.array_to_vector3(env.controller.grid_to_real(path[1])),
+                                                                        "reset_arms": reset_arms,
+                                                                        "arrived_at": 0.05 if record_mode else 0.5})
         if not effect_on_agents or task == "fire":
             env.controller.next_key_frame(force_direction=None)
         elif task == "wind":
-            env.controller.next_key_frame(force_direction=env.controller.manager.wind_v)
+            wind_v = env.controller.manager.wind_v
+            env.controller.next_key_frame(force_direction=wind_v)
         else:
             assert env.controller.manager.flood_manager.source_from == 'x_max'
             env.controller.next_key_frame(force_direction=np.array([-1, 0, 0]))

@@ -68,8 +68,8 @@ class WindAgentController(WindController):
         # self.init_seg()
 
     def update_replicant_url(self):
-        assert os.path.isfile(f"{os.getcwd()}/data/assets/replicant_0")
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        assert os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/replicant_0")
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME] = HumanoidLibrarian(Replicant.LIBRARY_NAME)
         record = Controller.HUMANOID_LIBRARIANS[Replicant.LIBRARY_NAME].get_record("replicant_0")
         import platform
@@ -287,19 +287,19 @@ class WindAgentController(WindController):
         return self.manager.find_nearest_object(pos=current_position, objects=self.containers)
 
     def replace_with_local_path(self, commands):
-        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/data/assets"
+        LOCAL_PATH_PREFIX = f"file://{os.getcwd()}/src/HAZARD/data/assets"
         download_cmds = []
         for command in commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget -nc {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
         for command in self.commands:
             if 'url' in command and "amazonaws.com" in command['url']:
                 new_url = command['url'].split("/")[-1]
-                if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                     download_cmds.append(f"wget -nc {command['url']}\n")
                 new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                 command['url'] = new_url
@@ -311,12 +311,12 @@ class WindAgentController(WindController):
             for command in add_on_commands:
                 if 'url' in command and "amazonaws.com" in command['url']:
                     new_url = command['url'].split("/")[-1]
-                    if not os.path.isfile(f"{os.getcwd()}/data/assets/{new_url}"):
+                    if not os.path.isfile(f"{os.getcwd()}/src/HAZARD/data/assets/{new_url}"):
                         download_cmds.append(f"wget -nc {command['url']}\n")
                     new_url = f"{LOCAL_PATH_PREFIX}/{new_url}"
                     command['url'] = new_url
         if len(download_cmds) > 0:
-            fout = open(f"{os.getcwd()}/data/assets/download_assets.sh", "w")
+            fout = open(f"{os.getcwd()}/src/HAZARD/data/assets/download_assets.sh", "w")
             for cmd in download_cmds:
                 fout.write(cmd)
             print("Please run data/assets/download_assets.sh first!")
