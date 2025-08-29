@@ -1,6 +1,7 @@
 from src.HAZARD.challenge import Challenge, init_logs
 from policy.llm import LLM, SamplingParameters
 from policy.llm_v2 import LLMv2
+from policy.llm_v4 import LLMv4
 from policy.change_reasoner import LLMChangeReasoner
 from policy.rule_based import RuleBasedAgent
 from policy.fire_flood_heuristic import GreedyAgent
@@ -34,6 +35,17 @@ def get_examplar_agent(agent_name="mcts", api_key="", api_key_file="", debug=Fal
         else:
             api_key_list = api_key
         return LLM(source=lm_source, lm_id=lm_id, prompt_template_path=prompt_path, cot=True,
+                   sampling_parameters=sampling_parameters, task=env_name, api_key=api_key_list,
+                   model_and_tokenizer_path=model_and_tokenizer_path)
+    if agent_name == "llmv4":
+        sampling_parameters = SamplingParameters(debug=debug, max_tokens=max_tokens)
+        if api_key_file != "":
+            api_key_file = open(api_key_file)
+            api_key_list = api_key_file.readlines()
+            api_key_list = [api_key.strip() for api_key in api_key_list]
+        else:
+            api_key_list = api_key
+        return LLMv4(source=lm_source, lm_id=lm_id, prompt_template_path=prompt_path, cot=True,
                    sampling_parameters=sampling_parameters, task=env_name, api_key=api_key_list,
                    model_and_tokenizer_path=model_and_tokenizer_path)
     if agent_name == "llmv2":
@@ -99,7 +111,7 @@ def submit(
         run_on_test: bool = False,  # turn off to run on test set
 
         # if you have a network issue with amazon cloud, please turn on this (details in documentation)
-        use_cached_assets: bool = False,
+        use_cached_assets: bool = True,
 
         # Parameters for perceptional version of HAZARD
         use_dino: bool = False,  # turn on to use DINO as perception module, instead of mask R-CNN
@@ -116,6 +128,7 @@ def submit(
 
         # parameters for making a demo
         record_with_agents: bool = False,  # making demo with an agent
+        inference: bool = False  # record inference time
 ):
     # args = get_args()
     # debug only open when developing the challenge
@@ -170,7 +183,7 @@ def submit(
                               use_dino=use_dino, effect_on_agents=effect_on_agents, use_cached_assets=use_cached_assets)
 
     if os.path.exists(os.path.join(data_dir, "log.txt")):  # single episode
-        challenge.submit(agent=agent_policy, logger=logger, eval_episodes=1)
+        challenge.submit(agent=agent_policy, logger=logger, eval_episodes=1, inference=inference)
     else:
         challenge_list = os.listdir(data_dir)
         challenge_list = sorted(challenge_list)
@@ -192,7 +205,7 @@ def submit(
             challenge.output_dir = now_output_dir
             challenge.data_dir = now_data_dir
             print(now_output_dir)
-            challenge.submit(agent=agent_policy, logger=logger, eval_episodes=1)
+            challenge.submit(agent=agent_policy, logger=logger, eval_episodes=1, inference=inference)
     if challenge.env.controller is not None:
         challenge.env.controller.communicate({"$type": "terminate"})
         challenge.env.controller.socket.close()

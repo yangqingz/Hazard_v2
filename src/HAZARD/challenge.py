@@ -9,8 +9,9 @@ from .envs.wind import WindEnv
 from .envs.flood.utils import ObjectState as FloodObjectState
 from .envs.fire.fire_utils import ObjectState as FireObjectState
 from .policy.env_actions import (agent_walk_to, agent_pickup, agent_drop, agent_explore, visualize_obs,
-                                 agent_walk_to_single_step, low_level_action)
+                                 agent_walk_to_single_step, low_level_action, agent_inference)
 import logging
+from src.HAZARD.policy.astar import get_astar_path, get_astar_weight
 
 PATH = os.path.dirname(os.path.abspath(__file__))
 while os.path.basename(PATH) != "src":
@@ -233,7 +234,7 @@ class Challenge:
             max_score = 1
         return total_score, max_score
 
-    def submit(self, agent, logger, eval_episodes):
+    def submit(self, agent, logger, eval_episodes, inference=False):
         total_finish = 0.0
         total_score = 0.0
         total_max_score = 0.0
@@ -259,7 +260,7 @@ class Challenge:
             target_info = self.get_target_info(get_target_description(self.env))
             if target_description is not None:
                 if agent.agent_type in ['greedy', 'llm', 'llmv2', 'mcts', 'mctsv2', 'human', 'record', 'rl', 'rule',
-                                        'random', 'custom']:
+                                        'random', 'custom', 'llmv4']:
                     agent.reset(goal_objects=target_description,
                                 objects_info=target_info)
                 elif agent.agent_type == 'oracle':
@@ -309,7 +310,9 @@ class Challenge:
                 processed_input = self.process_input(state, action_result, action_info)
                 processed_input['save_dir'] = str(os.path.join(self.output_dir, str(i)))
                 
-                if agent.agent_type == "llm" or agent.agent_type == "llmv2":
+                # path_info = self.get_object_astar_path_info(processed_input)
+                # print(path_info)
+                if agent.agent_type == "llm" or agent.agent_type == "llmv2" or agent.agent_type == "llmv4":
                     import json
                     with open(os.path.join(self.output_dir, str(i), f"input{self.env.controller.frame_count}.json"), "w") as f:
                         json.dump(processed_input, f, indent=4)
@@ -319,16 +322,29 @@ class Challenge:
                     visualize_obs(self.env, state, suffix=str(self.env.controller.frame_count),
                                   save_dir=os.path.join(self.output_dir, str(i)))
                 
+
+                ## main function to get action from agent
+                start_time = time.time()
                 current_action = agent.choose_target(state, processed_input)
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+
+                if inference:
+                    agent_inference(self.env, elapsed_time)
+
                 if isinstance(current_action, int) and agent.agent_type in ["rl", "random"]:
                     current_action = self.env.get_challenge_action(current_action)
                 print(current_action)
                 if current_action[0] == "pick_up":
-                    obj_name = self.env.controller.id2name[self.id_reverse_renumbering(self.nearest_object)]
-                    print(f"step {self.env.controller.comm_counter} action {current_action} {obj_name} "
-                          f"{str(self.id_reverse_renumbering(self.nearest_object))}", file=action_logger)
+                    try: 
+                        obj_name = self.env.controller.id2name[self.id_reverse_renumbering(self.nearest_object)]
+                        print(f"step {self.env.controller.comm_counter} action {current_action} {obj_name} "
+                            f"{str(self.id_reverse_renumbering(self.nearest_object))}", file=action_logger)
+                    except Exception as e:
+                        print("should pick up", self.nearest_object, " with a id", self.id_reverse_renumbering(self.nearest_object),file=action_logger)
+
                 else:
-                    print(f"step {self.env.controller.comm_counter} action {current_action}", file=action_logger)
+                    print(f"step {self.env.controller.comm_counter} action {current_action} elapsed time {elapsed_time:2f}", file=action_logger)
 
                 if agent.agent_type == 'oracle':
                     while self.env.controller.frame_count < self.max_steps:
@@ -343,15 +359,15 @@ class Challenge:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                    max_steps=100, reset_arms=False, arrived_at=1,
                                                                    task=self.env_name, record_mode=True,
-                                                                   effect_on_agents=self.effect_on_agents, output_dir=self.output_dir)
+                                                                   effect_on_agents=self.effect_on_agents)
                     elif self.env_name in ["fire", "flood"]:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents,output_dir=self.output_dir)
+                                                                   effect_on_agents=self.effect_on_agents)
                     else:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents,output_dir=self.output_dir)
+                                                                   effect_on_agents=self.effect_on_agents)
                     if action_result:
                         self.nearest_object = int(current_action[1])
                     else:
@@ -414,7 +430,7 @@ class Challenge:
                     assert False, f"action {current_action} not available"
                 local_finish = "success" if action_result else f"fail, because {action_info}"
                 self.logger.info(
-                    f"Executing step {self.step_num} for episode: {i}, action: {current_action}, finish: {local_finish}")
+                    f"Executing step {self.step_num} for episode: {i}, action: {current_action}, finish: {local_finish}, elapsed_time: {elapsed_time:.2f}")
 
                 if self.env.controller.frame_count >= self.max_steps:
                     done = True
@@ -462,3 +478,86 @@ class Challenge:
 
     def close(self):
         self.env.close()
+
+    
+    def get_object_astar_path_info(self, pickup_radius: float = 0.8):
+        """
+        Build a navigation summary for LLM planning:
+        - agent grid pose
+        - object nodes with grid centers (and optional world coords if available)
+        - edges agent->object with A* path, cost, reachability
+
+        Requires:
+        self.env.controller with:
+            - agents[0].dynamic.transform.position  (world xyz)
+            - real_to_grid(world_xyz) -> (r, c)
+            - grid_to_real((r, c)) -> world_xyz  (optional; used if present)
+            - _obs()['sem_map'] with keys: 'explored' (HxW), 'id' (HxW), optional others
+            - manager.id_renumbering[target_id]  (int label in sem_map['id'])
+        self.object_list: iterable of dicts with at least 'id' (int), optional 'class'/'type'
+
+        Returns (JSON-serializable dict):
+        {
+            "agent": {"pos_grid":[r,c], "pos_world":[x,y,z]},
+            "nodes": [{"id":int,"type":str,"pos_grid":[r,c],"pos_world":[x,y,z]|None},...],
+            "edges": [{"u":"agent","v":int,"dist":float,"reachable":bool,
+                    "path_grid":[[r,c],...],"pickup_radius":float},...]
+        }
+        """
+        import numpy as np
+        # ---- pull maps / agent pose ---------------------------------------------
+        obs = self.env.controller._obs()
+        sem_map = obs["sem_map"]
+
+        # mask of explored area
+        explored = sem_map["explored"]
+        id_map = explored * sem_map["id"]
+
+        # unique object IDs in explored region (ignore 0 for background)
+        object_ids = np.unique(id_map)
+        object_ids = object_ids[object_ids > 0]
+
+        # agent position in REAL and GRID coords
+        agent_real = np.asarray(self.env.controller.agents[0].dynamic.transform.position, dtype=float)
+        agent_grid = self.env.controller.real_to_grid(agent_real)
+
+        agent_out = {
+            "pos_world": agent_real.tolist(),
+            "pos_grid": agent_grid,
+        }
+        results = {}
+        for obj_id in object_ids:
+            # center of this object in GRID space
+            coords = np.argwhere(id_map == obj_id)
+            if coords.shape[0] == 0:
+                continue
+            center = coords.mean(axis=0)
+            center_grid = tuple(map(int, center))
+
+            # Euclidean grid distance
+            euclid = float(np.linalg.norm(np.array(agent_grid) - np.array(center)))
+
+            # Try to compute an A* path
+            try:
+                weight = get_astar_weight(sem_map=sem_map, origin=agent_grid, destination=center_grid)
+                path = get_astar_path(weight=weight, origin=agent_grid, destination=center_grid)
+                if path is not None and len(path) > 1:
+                    # path length in grid cells
+                    astar_len = 0.0
+                    for (x1, y1), (x2, y2) in zip(path[:-1], path[1:]):
+                        dx, dy = abs(x2 - x1), abs(y2 - y1)
+                        astar_len += np.sqrt(2) if (dx == 1 and dy == 1) else 1.0
+                else:
+                    astar_len = None
+            except Exception as e:
+                astar_len = None
+
+            results[int(obj_id)] = {
+                "center_grid": tuple(map(int, center)),
+                "astar": astar_len
+            }
+
+        return {
+            "agent": agent_out,
+            "objects": results,
+        }
