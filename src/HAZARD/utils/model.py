@@ -220,6 +220,8 @@ class Semantic_Mapping(nn.Module):
         self.origin_pos = origin_pos
     
     def grid_to_real(self, grid_pos):
+        if isinstance(grid_pos, tuple):
+            grid_pos = list(grid_pos)
         if not isinstance(grid_pos, list):
             grid_pos = grid_pos.tolist()
         return [(grid_pos[0] - self.map_offset[0]) * self.grid_size, 0, (grid_pos[1] - self.map_offset[1]) * self.grid_size]

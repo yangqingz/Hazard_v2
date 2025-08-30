@@ -128,7 +128,8 @@ def submit(
 
         # parameters for making a demo
         record_with_agents: bool = False,  # making demo with an agent
-        inference: bool = False  # record inference time
+        inference: bool = False,  # record inference time
+        use_dstar: bool = True  # use dstar for path planning
 ):
     # args = get_args()
     # debug only open when developing the challenge
@@ -166,21 +167,21 @@ def submit(
                                   map_size_h=256, map_size_v=256, grid_size=grid_size, use_gt=not perceptional,
                                   reverse_observation=reverse_observation, record_only=False, use_dino=use_dino,
                                   record_with_agents=record_with_agents, effect_on_agents=effect_on_agents,
-                                  use_cached_assets=use_cached_assets)
+                                  use_cached_assets=use_cached_assets, use_dstar=use_dstar)
         else:
             challenge = Challenge(env_name=env_name, data_dir=data_dir, output_dir=output_dir,
                                   logger=logger, launch_build=not debug, debug=debug, port=port, screen_size=1024,
                                   grid_size=grid_size, use_gt=not perceptional, record_only=(agent == "record"),
                                   reverse_observation=reverse_observation, record_with_agents=record_with_agents,
                                   use_dino=use_dino, effect_on_agents=effect_on_agents,
-                                  use_cached_assets=use_cached_assets)
+                                  use_cached_assets=use_cached_assets, use_dstar=use_dstar)
     else:
         agent_policy = agent
         challenge = Challenge(env_name=env_name, data_dir=data_dir, output_dir=output_dir,
                               logger=logger, launch_build=not debug, debug=debug, port=port, screen_size=1024,
                               grid_size=grid_size, use_gt=not perceptional, record_only=(agent == "record"),
                               reverse_observation=reverse_observation, record_with_agents=record_with_agents,
-                              use_dino=use_dino, effect_on_agents=effect_on_agents, use_cached_assets=use_cached_assets)
+                              use_dino=use_dino, effect_on_agents=effect_on_agents, use_cached_assets=use_cached_assets, use_dstar=use_dstar)
 
     if os.path.exists(os.path.join(data_dir, "log.txt")):  # single episode
         challenge.submit(agent=agent_policy, logger=logger, eval_episodes=1, inference=inference)

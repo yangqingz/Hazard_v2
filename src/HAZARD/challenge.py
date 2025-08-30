@@ -48,7 +48,7 @@ class Challenge:
     def __init__(self, env_name, data_dir, output_dir, logger, launch_build=True, port=1071, screen_size=512,
                  map_size_h=512, map_size_v=512, grid_size=0.1, debug=False, max_steps=1500, use_gt=False,
                  reverse_observation=False, record_only=False, record_with_agents=False, use_dino=False,
-                 effect_on_agents=False, use_cached_assets=False):
+                 effect_on_agents=False, use_cached_assets=False, use_dstar=False):
         if env_name == "fire":
             env = FireEnv
             max_steps = 1500 if not record_only else 4500
@@ -91,6 +91,7 @@ class Challenge:
         self.low_value = 1
         self.max_steps = max_steps
         self.record_with_agents = record_with_agents
+        self.use_dstar = use_dstar
 
     def reset(self):
         self.holding_object = []
@@ -359,15 +360,15 @@ class Challenge:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                    max_steps=100, reset_arms=False, arrived_at=1,
                                                                    task=self.env_name, record_mode=True,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
                     elif self.env_name in ["fire", "flood"]:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
                     else:
                         action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents)
+                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
                     if action_result:
                         self.nearest_object = int(current_action[1])
                     else:
