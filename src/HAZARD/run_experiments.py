@@ -2,6 +2,7 @@ from src.HAZARD.challenge import Challenge, init_logs
 from policy.llm import LLM, SamplingParameters
 from policy.llm_v2 import LLMv2
 from policy.llm_v4 import LLMv4
+from policy.llm_predict import LLMPredictor
 from policy.change_reasoner import LLMChangeReasoner
 from policy.rule_based import RuleBasedAgent
 from policy.fire_flood_heuristic import GreedyAgent
@@ -25,7 +26,7 @@ DATA_DIR = {
 
 
 def get_examplar_agent(agent_name="mcts", api_key="", api_key_file="", debug=False, max_tokens=512, lm_source="openai",
-                       lm_id="gpt-3.5-turbo", model_and_tokenizer_path="", env_name="fire", prompt_path=""):
+                       lm_id="gpt-4.1", model_and_tokenizer_path="", env_name="fire", prompt_path=""):
     if agent_name == "llm":
         sampling_parameters = SamplingParameters(debug=debug, max_tokens=max_tokens)
         if api_key_file != "":
@@ -46,6 +47,17 @@ def get_examplar_agent(agent_name="mcts", api_key="", api_key_file="", debug=Fal
         else:
             api_key_list = api_key
         return LLMv4(source=lm_source, lm_id=lm_id, prompt_template_path=prompt_path, cot=True,
+                   sampling_parameters=sampling_parameters, task=env_name, api_key=api_key_list,
+                   model_and_tokenizer_path=model_and_tokenizer_path)
+    if agent_name == "llm_predictor":
+        sampling_parameters = SamplingParameters(debug=debug, max_tokens=max_tokens)
+        if api_key_file != "":
+            api_key_file = open(api_key_file)
+            api_key_list = api_key_file.readlines()
+            api_key_list = [api_key.strip() for api_key in api_key_list]
+        else:
+            api_key_list = api_key
+        return  LLMPredictor(source=lm_source, lm_id=lm_id, prompt_template_path=prompt_path, cot=True,
                    sampling_parameters=sampling_parameters, task=env_name, api_key=api_key_list,
                    model_and_tokenizer_path=model_and_tokenizer_path)
     if agent_name == "llmv2":
@@ -129,7 +141,7 @@ def submit(
         # parameters for making a demo
         record_with_agents: bool = False,  # making demo with an agent
         inference: bool = False,  # record inference time
-        use_dstar: bool = True  # use dstar for path planning
+        use_dstar: bool = False # use dstar for path planning
 ):
     # args = get_args()
     # debug only open when developing the challenge

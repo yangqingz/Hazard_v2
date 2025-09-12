@@ -15,6 +15,7 @@ import numpy as np
 import cv2
 import copy
 import os
+import matplotlib.pyplot as plt
 
 from .object import ObjectStatus
 from .agent import *
@@ -76,6 +77,7 @@ class FireAgentController(FireController):
         self.id2name = {}
         self.other_containers = {}
         self.containers = {}
+        self.prev_fires = []
         # self.init_seg()
 
     def init_obi(self):
@@ -128,6 +130,7 @@ class FireAgentController(FireController):
         self.id2name = {}
         self.frame_count = 0
         self.communicate([])
+        self.prev_fires = []
         
         self.last_reward = None
         self.communicate([{"$type": "destroy_all_objects"}])
@@ -357,7 +360,16 @@ class FireAgentController(FireController):
     def get_agent_status(self, idx) -> FireAgent:
         return self.agents[idx]
     
-    def get_temperature_observation(self, idx, width=512, height=512):
+    def get_temperature_observation(self, idx, width=512, height=512, visualize=True):
+        """Get and optionally visualize temperature observations
+        Args:
+            idx: Agent index
+            width: Output width
+            height: Output height 
+            visualize: If True, save visualization of temperature map
+        Returns:
+            temp: Temperature map array
+        """
         depth = TDWUtils.get_depth_values(self.agents[idx].dynamic.images["depth"], width=width, height=height)
         depth = np.flip(depth, axis=0)
         camera_matrix = self.agents[idx].dynamic.camera_matrix
@@ -593,6 +605,126 @@ class FireAgentController(FireController):
         ret = reward - self.last_reward - 0.1
         self.last_reward = reward
         return ret
+
+    def locate_fire_sources(self, point_cloud, manager, bins=32, refine=8, topk=3, tau=0.7, eps=1e-6, temp_threshold=100):
+        """
+        Locate fire sources from point cloud and alert on significant temperature changes
+        Args:
+            point_cloud: (3, H, W) world coordinates
+            manager: FireManager instance
+            temp_threshold: Alert if temperature change exceeds this value
+        Returns:
+            fires: list of {"pos": np.array([x,y,z]), "temp": T}
+            T_small: temperature map for debugging/visualization
+        """
+        H, W = point_cloud.shape[1:]
+        ys = np.linspace(0.5, H-0.5, bins).astype(int)
+        xs = np.linspace(0.5, W-0.5, bins).astype(int)
+
+        # Coarse temperature map
+        T_small = np.zeros((bins, bins), dtype=np.float32)
+        for i, y in enumerate(ys):
+            for j, x in enumerate(xs):
+                T_small[i, j] = float(manager.query_point_temperature(point_cloud[:, y, x]))
+
+        # Log compression + light smoothing
+        L = np.log(np.maximum(T_small, eps))
+        L = cv2.GaussianBlur(L, (3, 3), 0)
+
+        # Non-maximum suppression
+        L_max = L.max() 
+        mask = (L >= tau * L_max)
+
+        # Simple peak selection using dilation
+        neigh = cv2.dilate(L, np.ones((3,3), np.uint8))
+        peaks = np.argwhere((L == neigh) & mask)
+        peaks = sorted(peaks, key=lambda ij: L[ij[0], ij[1]], reverse=True)[:topk]
+
+        fires = []
+        # Refine each peak
+        for (pi, pj) in peaks:
+            # Calculate refinement window
+            y_center = ys[pi]
+            x_center = xs[pj]
+            window_size = H // bins  # Size of one bin
+            
+            # Define refinement region around peak
+            y0 = max(0, y_center - window_size//2)
+            y1 = min(H-1, y_center + window_size//2)
+            x0 = max(0, x_center - window_size//2)
+            x1 = min(W-1, x_center + window_size//2)
+
+            # Refine location with higher resolution sampling
+            ys_ref = np.linspace(y0, y1, refine).astype(int)
+            xs_ref = np.linspace(x0, x1, refine).astype(int)
+            
+            # Find exact maximum temperature point
+            Tmax, best = -1.0, (ys[pi], xs[pj])
+            for yy in ys_ref:
+                for xx in xs_ref:
+                    T = float(manager.query_point_temperature(point_cloud[:, yy, xx]))
+                    if T > Tmax:
+                        Tmax, best = T, (yy, xx)
+
+            # Convert to world coordinates
+            pos = point_cloud[:, best[0], best[1]].astype(np.float32)
+            fires.append({"pos": pos, "temp": Tmax})
+
+        # Compare with previous fires and check for temperature changes
+        for fire in fires:
+            pos, temp = fire['pos'], fire['temp']
+            
+            # Look for matching previous fire source
+            matched = False
+            for prev_fire in self.prev_fires:
+                prev_pos, prev_temp = prev_fire['pos'], prev_fire['temp']
+                
+                # If positions are close (same fire source)
+                if np.linalg.norm(pos - prev_pos) < 1.0:  # Within 1 unit distance
+                    matched = True
+                    temp_change = temp - prev_temp  # Remove abs() to keep direction
+                    if temp_change < -temp_threshold:
+                        # This shouldn't happen - might be measurement error
+                        print(f"\033[93mWarning: Unexpected temperature drop!"
+                              f"\nPosition: {pos}"
+                              f"\nOld temp: {prev_temp:.1f}"
+                              f"\nNew temp: {temp:.1f}"
+                              f"\nDrop: {-temp_change:.1f}"
+                              f"\nPossible occlusion or measurement error\033[0m")
+                    elif temp_change > temp_threshold:
+                        # Fire is growing - this is expected
+                        print(f"\033[91mALERT: Fire is spreading!"
+                              f"\nPosition: {pos}"
+                              f"\nOld temp: {prev_temp:.1f}"
+                              f"\nNew temp: {temp:.1f}"
+                              f"\nIncrease: {temp_change:.1f}\033[0m")
+        
+        # New fire source detected
+        if not matched and temp > temp_threshold:
+            print(f"\033[91mNew fire detected!"
+                  f"\nPosition: {pos}"
+                  f"\nTemperature: {temp:.1f}\033[0m")
+
+        # Update previous fires with highest measured temperatures
+        new_prev_fires = []
+        for fire in fires:
+            pos, temp = fire['pos'], fire['temp']
+            matched = False
+            for prev_fire in self.prev_fires:
+                if np.linalg.norm(pos - prev_fire['pos']) < 1.0:
+                    # Keep highest measured temperature
+                    new_prev_fires.append({
+                        'pos': pos,
+                        'temp': max(temp, prev_fire['temp'])
+                    })
+                    matched = True
+                    break
+            if not matched:
+                new_prev_fires.append(fire)
+        
+        self.prev_fires = new_prev_fires
+
+        return fires, T_small
     
     def _done(self, agent_idx: int = 0):
         if len(self.finished) == len(self.target_ids):

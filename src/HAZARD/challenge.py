@@ -2,6 +2,7 @@ import shutil
 
 import os
 import json
+import numpy as np
 import time
 from .envs.flood import FloodEnv
 from .envs.fire import FireEnv
@@ -92,11 +93,13 @@ class Challenge:
         self.max_steps = max_steps
         self.record_with_agents = record_with_agents
         self.use_dstar = use_dstar
+        self.pickup_stats = {}  # Add this to track per-object stats
 
     def reset(self):
         self.holding_object = []
         self.nearest_object = None
         self.have_finished_list = []
+        self.pickup_stats = {}  # Reset stats on episode reset
 
     def get_target_info(self, target_list):
         value_dict = json.load(open(os.path.join(PATH, "src/HAZARD/scenes/scene_configs/value.json")))
@@ -133,8 +136,9 @@ class Challenge:
                 return id
         return -1
 
-    def process_input(self, state, action_result, action_info):
+    def process_input(self, state, action_result, action_info, distance=0.0):
         processed_input = {}
+        # Get visible objects from semantic map
         explored_sem_id_map = state['sem_map']['explored']*state['sem_map']['id']
         explored_object_id_list = [int(idx) for idx in set(explored_sem_id_map.flatten()) if int(idx) != 0]
         explored_object_id_list = list(set(explored_object_id_list))
@@ -149,6 +153,9 @@ class Challenge:
                                                                           explored_object_category_list) if idx in id_map
         ]
         processed_input['holding_objects'] = self.holding_object
+        # Add pickup statistics to processed input
+        processed_input['pickup_stats'] = self.pickup_stats
+        processed_input['previous_distance_walked'] = distance  # Add total distance
         if self.nearest_object != None:
             try:
                 processed_input['nearest_object'] = [
@@ -261,7 +268,7 @@ class Challenge:
             target_info = self.get_target_info(get_target_description(self.env))
             if target_description is not None:
                 if agent.agent_type in ['greedy', 'llm', 'llmv2', 'mcts', 'mctsv2', 'human', 'record', 'rl', 'rule',
-                                        'random', 'custom', 'llmv4']:
+                                        'random', 'custom', 'llmv4','llm_predictor']:
                     agent.reset(goal_objects=target_description,
                                 objects_info=target_info)
                 elif agent.agent_type == 'oracle':
@@ -283,6 +290,7 @@ class Challenge:
             local_reward = 0.0
             action_result = False
             action_info = ""
+            total_steps_to_pickup = 0
             self.env.controller.communicate([])
             if "demo" in self.output_dir:
                 for i in range(1500):
@@ -311,14 +319,13 @@ class Challenge:
                 processed_input = self.process_input(state, action_result, action_info)
                 processed_input['save_dir'] = str(os.path.join(self.output_dir, str(i)))
                 
-                # path_info = self.get_object_astar_path_info(processed_input)
+                print("process pickup stats:", processed_input['pickup_stats'])
                 # print(path_info)
                 if agent.agent_type == "llm" or agent.agent_type == "llmv2" or agent.agent_type == "llmv4":
                     import json
                     with open(os.path.join(self.output_dir, str(i), f"input{self.env.controller.frame_count}.json"), "w") as f:
                         json.dump(processed_input, f, indent=4)
                     visualize_obs(self.env, state, suffix=str(self.env.controller.frame_count), save_dir=os.path.join(self.output_dir, str(i)))
-
                 if agent.agent_type == "mcts" or agent.agent_type == "mctsv2":
                     visualize_obs(self.env, state, suffix=str(self.env.controller.frame_count),
                                   save_dir=os.path.join(self.output_dir, str(i)))
@@ -356,19 +363,32 @@ class Challenge:
                     import json
                     json.dump(oracle_plan, open(os.path.join(self.output_dir, f"action-{str(i)}.json"), "w"))
                 elif current_action[0] == "walk_to":
+                    # Initialize stats for new target
+                    if int(current_action[1]) not in self.pickup_stats:
+                        self.pickup_stats[int(current_action[1])] = {
+                            "steps_to_pickup": 0,
+                            "pickup_success": False,
+                            "astar_len": self.get_object_astar_path(int(current_action[1]))
+                        }
+                        
+                    # Update stats for this target
+                    self.pickup_stats[int(current_action[1])]["steps_to_pickup"] += 1
+                
                     if self.record_with_agents:
-                        action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                                   max_steps=100, reset_arms=False, arrived_at=1,
-                                                                   task=self.env_name, record_mode=True,
-                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
+                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                                                               max_steps=100, reset_arms=False, arrived_at=1,
+                                                               task=self.env_name, record_mode=True,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
                     elif self.env_name in ["fire", "flood"]:
-                        action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                               max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
+                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
                     else:
-                        action_result, action_info = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                               max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                                   effect_on_agents=self.effect_on_agents, use_dstar= self.use_dstar)
+                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
+                    total_steps_to_pickup += 1
+                    
                     if action_result:
                         self.nearest_object = int(current_action[1])
                     else:
@@ -384,7 +404,7 @@ class Challenge:
                         self.nearest_object = None
                 elif current_action[0] == "walk_to_single":
                     if self.env_name in ["fire", "flood"]:
-                        action_result, action_info = agent_walk_to_single_step(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                        action_result, action_info= agent_walk_to_single_step(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
                                                                reset_arms=False, arrived_at=0.1, task=self.env_name,
                                                                                effect_on_agents=self.effect_on_agents,
                                                                                record_mode=self.record_with_agents)
@@ -406,6 +426,8 @@ class Challenge:
                             action_result, action_info = agent_pickup(self.env, self.id_reverse_renumbering(self.nearest_object), env_type=self.env_name)
                     else:
                         self.nearest_object = int(current_action[1])
+                        if int(current_action[1]) in self.pickup_stats and action_result:
+                            self.pickup_stats[int(current_action[1])]["pickup_success"] = True
                         action_result, action_info = agent_pickup(self.env, self.id_reverse_renumbering(self.nearest_object), env_type=self.env_name)
                     if action_result:
                         self.hold_object()
@@ -481,84 +503,66 @@ class Challenge:
         self.env.close()
 
     
-    def get_object_astar_path_info(self, pickup_radius: float = 0.8):
+    def get_object_astar_path(self, object_id, arrived_at: float = 0.5):
         """
-        Build a navigation summary for LLM planning:
-        - agent grid pose
-        - object nodes with grid centers (and optional world coords if available)
-        - edges agent->object with A* path, cost, reachability
-
-        Requires:
-        self.env.controller with:
-            - agents[0].dynamic.transform.position  (world xyz)
-            - real_to_grid(world_xyz) -> (r, c)
-            - grid_to_real((r, c)) -> world_xyz  (optional; used if present)
-            - _obs()['sem_map'] with keys: 'explored' (HxW), 'id' (HxW), optional others
-            - manager.id_renumbering[target_id]  (int label in sem_map['id'])
-        self.object_list: iterable of dicts with at least 'id' (int), optional 'class'/'type'
-
-        Returns (JSON-serializable dict):
-        {
-            "agent": {"pos_grid":[r,c], "pos_world":[x,y,z]},
-            "nodes": [{"id":int,"type":str,"pos_grid":[r,c],"pos_world":[x,y,z]|None},...],
-            "edges": [{"u":"agent","v":int,"dist":float,"reachable":bool,
-                    "path_grid":[[r,c],...],"pickup_radius":float},...]
-        }
+        Calculate A* path and distance to a single object
+        Args:
+            object_id: ID of the target object
+        Returns:
+            Dictionary containing serializable path information
         """
-        import numpy as np
-        # ---- pull maps / agent pose ---------------------------------------------
+        # Get observation and semantic map
         obs = self.env.controller._obs()
         sem_map = obs["sem_map"]
 
-        # mask of explored area
+        # Get explored area mask and ID map
         explored = sem_map["explored"]
         id_map = explored * sem_map["id"]
 
-        # unique object IDs in explored region (ignore 0 for background)
-        object_ids = np.unique(id_map)
-        object_ids = object_ids[object_ids > 0]
-
-        # agent position in REAL and GRID coords
+        # Get agent position and convert to native Python types
         agent_real = np.asarray(self.env.controller.agents[0].dynamic.transform.position, dtype=float)
-        agent_grid = self.env.controller.real_to_grid(agent_real)
+        agent_grid = tuple(map(int, self.env.controller.real_to_grid(agent_real)))
 
-        agent_out = {
-            "pos_world": agent_real.tolist(),
-            "pos_grid": agent_grid,
-        }
-        results = {}
-        for obj_id in object_ids:
-            # center of this object in GRID space
-            coords = np.argwhere(id_map == obj_id)
-            if coords.shape[0] == 0:
-                continue
-            center = coords.mean(axis=0)
-            center_grid = tuple(map(int, center))
-
-            # Euclidean grid distance
-            euclid = float(np.linalg.norm(np.array(agent_grid) - np.array(center)))
-
-            # Try to compute an A* path
-            try:
-                weight = get_astar_weight(sem_map=sem_map, origin=agent_grid, destination=center_grid)
-                path = get_astar_path(weight=weight, origin=agent_grid, destination=center_grid)
-                if path is not None and len(path) > 1:
-                    # path length in grid cells
-                    astar_len = 0.0
-                    for (x1, y1), (x2, y2) in zip(path[:-1], path[1:]):
-                        dx, dy = abs(x2 - x1), abs(y2 - y1)
-                        astar_len += np.sqrt(2) if (dx == 1 and dy == 1) else 1.0
-                else:
-                    astar_len = None
-            except Exception as e:
-                astar_len = None
-
-            results[int(obj_id)] = {
-                "center_grid": tuple(map(int, center)),
-                "astar": astar_len
+        # Find object center in grid coordinates
+        coords = np.argwhere(id_map == object_id)
+        if coords.shape[0] == 0:
+            return {
+                "agent": {
+                    "pos_world": [float(x) for x in agent_real],
+                    "pos_grid": agent_grid,
+                },
+                "object": None,
+                "error": "Object not found in semantic map"
             }
 
-        return {
-            "agent": agent_out,
-            "objects": results,
-        }
+        # Find closest point and convert to native Python types
+        dists = np.linalg.norm(coords - agent_grid, axis=1)
+        target_grid = tuple(map(int, coords[dists.argmin()]))
+
+        # Try to compute A* path
+        try:
+            weight = get_astar_weight(sem_map=sem_map, origin=agent_grid, destination=target_grid)
+            path = get_astar_path(weight=weight, origin=agent_grid, destination=target_grid)
+            
+            astar_len = None
+            if path is not None and len(path) > 1:
+                astar_len = 0.0
+                pruned_path = []
+                for (x1, y1), (x2, y2) in zip(path[:-1], path[1:]):
+                    # Convert coordinates to native Python types
+                    step = float(np.linalg.norm(np.array([x2, y2]) - np.array([x1, y1])))
+                    astar_len += step
+                    pruned_path.append((int(x1), int(y1)))
+                    
+                    if np.linalg.norm(np.array([x2, y2]) - np.array(target_grid)) <= arrived_at:
+                        pruned_path.append((int(x2), int(y2)))
+                        break
+            
+            path = pruned_path
+            astar_len = float(astar_len)  # Convert to native Python float
+            
+        except Exception as e:
+            astar_len = None
+            path = None
+
+        return astar_len

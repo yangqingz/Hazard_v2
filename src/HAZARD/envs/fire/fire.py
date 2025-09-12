@@ -165,10 +165,13 @@ class FireController(Controller):
             # self.commands.append({"$type": "set_color",
             #                         "id": idx,
             #                         "color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 0.5}})
-            self.commands.append({"$type": "destroy_visual_effect",
-                                    "id": self.fire_info[idx].fire_id})
-            self.manager.remove_object(self.fire_info[idx].fire_id)
-            self.fire_info.pop(idx)
+            try:
+                self.commands.append({"$type": "destroy_visual_effect",
+                                        "id": self.fire_info[idx].fire_id})
+                self.manager.remove_object(self.fire_info[idx].fire_id)
+                self.fire_info.pop(idx)
+            except KeyError:
+                pass
         # extend fire
         for i in range(len(resp)-1):
             r_id = OutputData.get_data_type_id(resp[i])

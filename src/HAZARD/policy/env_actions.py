@@ -1,6 +1,10 @@
 import sys
 import os
+import time
 import cv2
+from src.HAZARD.policy.dstar.d_star_lite import get_dstar_weight, DStarLite
+from src.HAZARD.policy.dstar.grid import OccupancyGridMap
+
 PATH = os.path.dirname(os.path.abspath(__file__))
 while os.path.basename(PATH) != "HAZARD":
     PATH = os.path.dirname(PATH)
@@ -106,16 +110,18 @@ def _vec3(v, fallback_y=0.0):
 
 def save_path_map(env,
                   obs=None,
-                  save_dir=os.path.join(PATH, "..",
-                                        'outputs', "logs"),
+                  save_dir=os.path.join(PATH, "logs"),
                   astar_path=None,
+                  dstar_path=None,  # Add D* path parameter
                   traj_color_bgr=(255, 0, 0),     # blue line (BGR)
-                  astar_color_bgr=(0, 255, 0),    # green line for planned path
+                  astar_color_bgr=(0, 255, 0),    # green line for A* path
+                  dstar_color_bgr=(0, 0, 255),    # red line for D* path
                   thickness=2):
     """
-    Draws the entire trajectory so far + optional astar_path on the semantic map and saves to path_{frame}.png.
-    - Trajectory comes from accumulating agent grid positions across calls.
-    - astar_path is a sequence of grid (row, col) points from your planner.
+    Draws paths on semantic map:
+    - Agent trajectory in blue
+    - A* path in green
+    - D* path in red
     """
     save_dir=os.path.join(save_dir, '0')
     # 0) Get obs + sem map
@@ -158,16 +164,25 @@ def save_path_map(env,
         pts = np.array([[p[1], p[0]] for p in env.controller._traj_history], dtype=np.int32)  # (col,row)
         cv2.polylines(bgr, [pts], isClosed=False, color=traj_color_bgr, thickness=thickness)
 
-    # 6) Overlay optional current A* path (as a polyline)
+    # 6) Overlay A* path if provided
     if astar_path is not None and len(astar_path) >= 2:
-        # clip to bounds, convert to (col,row)
         astar_pts = []
         for r0, c0 in astar_path:
             if 0 <= r0 < w and 0 <= c0 < h:
                 astar_pts.append([int(c0), int(r0)])
         if len(astar_pts) >= 2:
             cv2.polylines(bgr, [np.array(astar_pts, dtype=np.int32)], isClosed=False,
-                          color=astar_color_bgr, thickness=max(1, thickness - 1))
+                         color=astar_color_bgr, thickness=max(1, thickness - 1))
+
+    # 6.5) Overlay D* path if provided
+    if dstar_path is not None and len(dstar_path) >= 2:
+        dstar_pts = []
+        for r0, c0 in dstar_path:
+            if 0 <= r0 < w and 0 <= c0 < h:
+                dstar_pts.append([int(c0), int(r0)])
+        if len(dstar_pts) >= 2:
+            cv2.polylines(bgr, [np.array(dstar_pts, dtype=np.int32)], isClosed=False,
+                         color=dstar_color_bgr, thickness=max(1, thickness - 1))
 
     # 7) Mark current agent cell (small red square)
     for di in range(-1, 2):
@@ -177,6 +192,7 @@ def save_path_map(env,
                 bgr[rr, cc] = (0, 0, 255)  # red in BGR
 
     # 8) Save
+    print("Saving path map...")
     frame = env.controller.frame_count
     out_path = os.path.join(save_dir, f"path_{frame}.png")
     cv2.imwrite(out_path, bgr)
@@ -184,45 +200,105 @@ def save_path_map(env,
  
 # def agent_walk_to(env: WindEnv, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0):
 def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0,
-                task=None, effect_on_agents=False, record_mode=False):
-    # visualize_obs(env, None, suffix="0")
+                task=None, effect_on_agents=False, record_mode=False, use_dstar=False):
+    """Walk to target using either A* or D* path planning
+    
+    Returns:
+        Tuple[bool, str, Tuple[float, float]]: (success, message, (distance_meters, distance_grid))
+    """
     start_frame = env.controller.frame_count
-    if record_mode and task != "wind":
-        env.controller.agents[0].collision_detection.avoid = False
-        env.controller.agents[0].collision_detection.objects = False
+    total_meters = 0.0
+    total_grid = 0.0
+    last_pos = env.controller.agents[0].dynamic.transform.position.copy()
+    grid_size = env.controller.sem_map.grid_size
 
     while True:
-        agent_pos = env.controller.agents[0].dynamic.transform.position
+        current_pos = env.controller.agents[0].dynamic.transform.position
+        
+        # Convert TDW units (1 meter = 100 units) to meters
+        step_meters = np.linalg.norm(current_pos[[0, 2]] - last_pos[[0, 2]]) / 100.0
+        
+        # Calculate grid cell distance
+        last_grid = env.controller.real_to_grid(last_pos)
+        current_grid = env.controller.real_to_grid(current_pos)
+        step_grid = np.linalg.norm(np.array(current_grid) - np.array(last_grid))
+        
+        
+        total_meters += step_meters
+        total_grid += step_grid
+        last_pos = current_pos.copy()
+
         target_pos = env.controller.manager.objects[target].position if isinstance(target, int) else np.array(target)
-        if np.linalg.norm(agent_pos[[0, 2]] - target_pos[[0, 2]]) < arrived_at:
+        
+        if np.linalg.norm(current_pos[[0, 2]] - target_pos[[0, 2]]) < arrived_at:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return True, "success"
+            return True, "success", total_grid
         
         if env.controller.frame_count - start_frame > max_steps:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "max steps reached"
+            return False, "max steps reached", total_grid
         
-        agent_pos = env.controller.real_to_grid(agent_pos)
+        agent_pos = env.controller.real_to_grid(current_pos)
         target_pos = env.controller.real_to_grid(target_pos)
         obs = env.controller._obs()
         sem_map = obs["sem_map"]
+        
         if isinstance(target, int) and not np.any(sem_map["id"] == env.controller.manager.id_renumbering[target]):
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "target not in vision or memory"
-        weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
-        path = get_astar_path(weight=weight, origin=agent_pos, destination=target_pos)
-        # visualize_obs(env, obs, suffix=str(env.controller.frame_count), astar_path=path)
-        # walk to first point
+            return False, "target not in vision or memory", total_grid
+
+        # Get path using either D* or A*
+        if use_dstar:
+            # Get D* path
+            weight = get_dstar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
+            
+            
+            occ_map = OccupancyGridMap(x_dim=weight.shape[0], 
+                                      y_dim=weight.shape[1],
+                                      exploration_setting='8N')
+            occ_map.grid = np.where(weight > 1000, 255, 0).astype(np.uint8)
+            
+            if not hasattr(env.controller, 'dstar') or env.controller.dstar.s_goal != tuple(target_pos):
+                env.controller.dstar = DStarLite(occ_map, 
+                                               s_start=tuple(agent_pos),
+                                               s_goal=tuple(target_pos))
+            
+            dstar_path, _, _ = env.controller.dstar.move_and_replan(tuple(agent_pos))
+            
+            # Also get A* path for comparison
+            astar_weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
+            astar_path = get_astar_path(weight=astar_weight, origin=agent_pos, destination=target_pos)
+            
+            # Save both paths
+            save_path_map(env, obs=obs, astar_path=astar_path, dstar_path=dstar_path)
+            
+            path = dstar_path if dstar_path is not None and len(dstar_path) > 1 else astar_path
+        else:
+            # Only A* path
+            weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
+            path = get_astar_path(weight=weight, origin=agent_pos, destination=target_pos)
+            # save_path_map(env, obs=obs, astar_path=path)
+        
         if path is None or len(path) <= 1:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "don't know, maybe out of bounds"
-        env.controller.do_action(agent_idx=0, action="move_to", params={"target": TDWUtils.array_to_vector3(env.controller.grid_to_real(path[1])),
-                                                                        "reset_arms": reset_arms,
-                                                                        "arrived_at": 0.05 if record_mode else 0.5})
+            return False, "don't know, maybe out of bounds", total_grid
+
+        # Move to next point in path
+        next_point = path[1]  # D* returns path as list of tuples
+        env.controller.do_action(
+            agent_idx=0,
+            action="move_to",
+            params={
+                "target": TDWUtils.array_to_vector3(env.controller.grid_to_real(next_point)),
+                "reset_arms": reset_arms,
+                "arrived_at": 0.05 if record_mode else 0.5
+            }
+        )
+
         if not effect_on_agents or task == "fire":
             env.controller.next_key_frame(force_direction=None)
         elif task == "wind":
@@ -466,3 +542,29 @@ def agent_drop(env, container: Optional[int]=None, env_type: str = "what?"):
         return True, f"drop success but still dropping, reach for {'success' if reach_success else 'failed, may cause problems'}"
     else:
         return False, "I don't not what happened but the drop failed"
+    
+def agent_inference(env, inference_time: float, fps: int = 30):
+    """
+    Advance the TDW sim for the duration of your recorded inference time,
+    without executing any agent action. This keeps the world animating
+    while your model "thinks."
+
+    Args:
+        env: your TDW environment wrapper
+        inference_time: elapsed time (in seconds) that the agent took to infer
+        fps: simulation frames per second (default: 30)
+
+    Returns:
+        (True, "success")
+    """
+    frame_interval = 1.0 / fps
+    start_frame = env.controller.frame_count
+    total_frames = int(inference_time * fps)
+    ending_frame = start_frame + total_frames
+
+    while env.controller.frame_count <= ending_frame:
+        env.controller.next_key_frame()
+        time.sleep(frame_interval)
+
+    return True, "success"
+

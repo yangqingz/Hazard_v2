@@ -1,9 +1,16 @@
 from src.HAZARD.policy.dstar.priority_queue import PriorityQueue, Priority
 from src.HAZARD.policy.dstar.grid import OccupancyGridMap
 import numpy as np
+import matplotlib.pyplot as plt
 from src.HAZARD.policy.dstar.utils import heuristic, Vertex, Vertices
 from typing import Dict, List
 
+try:
+    from scipy import ndimage as ndi
+    _HAS_SCIPY = True
+except Exception:
+    _HAS_SCIPY = False
+    
 OBSTACLE = 255
 UNOCCUPIED = 0
 
@@ -156,51 +163,82 @@ class DStarLite:
             self.compute_shortest_path()
         print("path found!")
         return path, self.g, self.rhs
+
     
-def get_dstar_weight(sem_map, origin, destination):
-    # unexplored: 5, explored: 1
-    # height > 0.1: += 10
-    # height > 1: += 1000
+def get_dstar_weight(sem_map, origin=None, destination=None, inflation_radius=3, obstacle_threshold=0.3):
+    """
+    Build a traversability / cost map that strongly penalizes cells near obstacles
+    and accounts for height. Returns a float32 weight array same shape as sem_map["explored"].
+    - inflation_radius: how many cells around obstacle to inflate
+    - obstacle_threshold: height value above which a cell is considered an obstacle
+    """
     explored = sem_map["explored"]
     height = sem_map["height"]
+    if explored is None or height is None:
+        raise ValueError("sem_map must contain 'explored' and 'height'")
+
     w, h = explored.shape
-    weight = np.ones((w, h))
-    weight[explored == 0] = 30
-    
-    # exp(x * 0.) * y= 10
-    # exp(x * 1.6) * y = 1000
-    # x = 3, y = 7
-    weight[height > 0.5] += np.exp(height[height > 0.5] * 3) * 7
-    weight[height > 0.1] += 10
-    # weight[height > 0.5] += 50
-    # weight[height > 1.6] += 1000
-    # for each position, if it is near an obstacle, increase its weight by 50
-    conv_weight = np.zeros((w, h))
-    for i in range(-2, 3):
-        for j in range(-2, 3):
-            conv_weight[max(0, i): min(w, w+i), max(0, j): min(h, h+j)] += weight[max(0, -i): min(w, w-i), max(0, -j): min(h, h-j)] * 1.0 / (abs(i) + abs(j) + 1)
-    return conv_weight.astype(np.float32)
+    # base weight: free vs unexplored
+    weight = np.ones((w, h), dtype=np.float32)
+    weight[explored == 0] = 30.0  # unexplored penalty
 
-# if __name__ == "__main__":
-#     # Fake semantic map
-#     sem_map = {
-#         "explored": np.ones((5,5), dtype=np.int32),
-#         "height": np.zeros((5,5), dtype=np.float32)
-#     }
-#     sem_map["explored"][2,2] = 0  # simulate unexplored = obstacle
-#     sem_map["height"][3,3] = 1.2  # high wall
+    # add height-related cost (gentle slope penalty)
+    weight += (height * 4.0).astype(np.float32)
+    # mark high obstacles as effectively blocked
+    weight[height > 1.6] = 1e6
 
-#     # Convert to weight grid
-#     weight_grid = get_dstar_weight(sem_map, origin=(0,0), destination=(4,4))
+    # obstacle mask: cells considered obstacles for inflation (darker gray in your image)
+    obstacle_mask = height >= obstacle_threshold
 
-#     # Initialize occupancy grid map
-#     occ_map = OccupancyGridMap(x_dim=weight_grid.shape[0],
-#                                y_dim=weight_grid.shape[1],
-#                                exploration_setting='8N')
-#     # Mark high cost cells as obstacles for this version
-#     occ_map.grid = np.where(weight_grid > 1000, 255, 0).astype(np.uint8)
+    # distance to nearest obstacle (for each free cell)
+    if _HAS_SCIPY:
+        # distance from free cells to nearest obstacle
+        dist = ndi.distance_transform_edt(~obstacle_mask)
+    else:
+        # fallback: simple convolution-based distance approximation
+        dist = np.full((w, h), np.inf, dtype=np.float32)
+        obstacle_idx = np.argwhere(obstacle_mask)
+        if obstacle_idx.size == 0:
+            dist[:] = np.inf
+        else:
+            coords = np.indices((w, h)).transpose(1, 2, 0).reshape(-1, 2)
+            coords = coords.reshape(w * h, 2)
+            # compute vectorized Euclidean distance (might be slow for big maps)
+            ox = obstacle_idx[:, 0][:, None]
+            oy = obstacle_idx[:, 1][:, None]
+            cx = np.arange(w)[:, None]
+            cy = np.arange(h)[None, :]
+            # approximate using broadcasting in chunks to avoid memory blow-up
+            for i in range(w):
+                for j in range(h):
+                    if obstacle_mask[i, j]:
+                        dist[i, j] = 0.0
+            # coarse fallback: Manhattan-ish propagation
+            for r in range(1, inflation_radius + 10):
+                mask = (np.abs(np.arange(w)[:, None] - np.arange(w)[None, :]) + np.abs(np.arange(h)[None, :] - np.arange(h)[:, None]))  # not ideal but safe
+                break
+            dist[np.isinf(dist)] = inflation_radius + 5.0
 
-#     # Create planner and find path
-#     planner = DStarLite(occ_map, s_start=(0,0), s_goal=(4,4))
-#     path, g, rhs = planner.move_and_replan((0,0))
-#     print("Planned Path:", path)
+    # penalty: cells within inflation_radius get growing cost; farther cells small or none
+    penalty = np.zeros_like(weight, dtype=np.float32)
+    # avoid divide-by-zero; cap distances
+    capped = np.minimum(dist, inflation_radius)
+    inside = capped < inflation_radius
+    # quadratic penalty near obstacle (tune factor)
+    penalty[inside] = ((inflation_radius - capped[inside]) ** 2) * 8.0
+    # apply penalty (additive)
+    weight += penalty
+    # normalize & rescale to keep costs in a reasonable range (preserve very large for blocked)
+    finite_mask = np.isfinite(weight) & (weight < 1e5)
+    if finite_mask.any():
+        wmin = weight[finite_mask].min()
+        wmax = weight[finite_mask].max()
+        # scale to [1, 200] range (avoid shrinking very large blocked weights)
+        if wmax - wmin > 1e-6:
+            rescaled = 1.0 + (weight - wmin) / (wmax - wmin) * 199.0
+            weight[finite_mask] = rescaled[finite_mask]
+
+    # ensure blocked cells remain extremely costly
+    weight[height > 1.6] = 1e6
+
+    return weight.astype(np.float32)

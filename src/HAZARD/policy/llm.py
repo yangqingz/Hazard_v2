@@ -2,7 +2,7 @@ import pdb
 import tiktoken
 from openai import OpenAI
 
-client = OpenAI(api_key=None)
+client = OpenAI(api_key="")
 import json
 import os
 import pandas as pd
@@ -12,6 +12,7 @@ from openai import OpenAIError
 import backoff
 import time
 import torch
+from src.HAZARD.policy.astar import get_astar_path, get_astar_weight
 
 class SamplingParameters:
     def __init__(self, debug=False, max_tokens=64, t=0.7, top_p=1.0, n=1, logprobs=1, echo=False):
@@ -54,7 +55,7 @@ class LLM:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano'])
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano','gpt-5','ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ','ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4', 'o3'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
 
@@ -69,6 +70,19 @@ class LLM:
                 self.sampling_params = {
                     "temperature": 1,
                     "top_p": sampling_parameters.top_p,
+                    "n": sampling_parameters.n,
+                }
+            elif self.lm_id == 'o3':
+                # handle 'o3' model: similar defaults to o1-preview, include max_tokens
+                self.sampling_params = {
+                    "reasoning_effort": "high",
+                    "n": sampling_parameters.n,
+                }
+            elif self.lm_id == 'gpt-5':
+                self.sampling_params = {
+                    "max_completion_tokens": sampling_parameters.max_tokens,
+                    "verbosity": "medium",
+                    "reasoning_effort": "minimal",
                     "n": sampling_parameters.n,
                 }
             elif self.chat:
@@ -297,6 +311,7 @@ class LLM:
         ##todo: add temp/height/... as current object state
 
         object_location_description_list = self.get_object_location_description()
+        object_center_list = self.get_object_center()
         if self.task == 'wind':
             ps = "Shopping carts already found:\n"
             for obj, desc in zip(self.object_list, object_location_description_list):
@@ -310,7 +325,8 @@ class LLM:
             # print(type(obj['id']), type(self.current_seen_objects_id[0]))
             if obj['category'] not in self.target_objects or obj['id'] not in self.current_seen_objects_id:
                 continue
-            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance: {desc} m, "
+            # ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance to agent: {desc} m, position at: ({center[0]} , {center[1]}) "
+            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance to agent: {desc} m) "
             if self.task == 'fire':
                 if obj['id'] not in self.env_change_record:
                     ps += f"temperature: unknown\n"
@@ -508,6 +524,9 @@ class LLM:
         self.agent_pos = agent_pos
         progress_desc = self.progress2text()
         action_history_desc = ", ".join(action_history[-10:] if len(action_history) > 10 else action_history)
+        # object_edges_desc = self.format_object_to_object_edges()
+        # print("object_edges_desc", object_edges_desc)
+        # prompt = self.prompt_template.replace('$STATE$', progress_desc + "\n" + object_edges_desc)
         prompt = self.prompt_template.replace('$STATE$', progress_desc)
         prompt = prompt.replace('$ACTION_HISTORY$', action_history_desc + "\n")
         prompt = prompt.replace('$TARGET_OBJECTS$', self.objects_list2text() + "\n")
@@ -567,3 +586,169 @@ class LLM:
                      "plan": plan,
                      "total_cost": self.total_cost})
         return action, info
+
+    def get_object_center(self):
+        object_center_list = []
+        id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
+        object_ids = [int(obj['id']) for obj in self.object_list]
+        # list of object IDs
+
+        # agent position in real + grid space
+        agent_grid = self.agent_pos
+        if not isinstance(agent_grid, (list, tuple, np.ndarray)) or len(agent_grid) < 2:
+            print("[A*] ERROR: self.agent_pos malformed:", agent_grid)
+            return ["planner error"]
+
+        # ensure ints
+        agent_grid = (int(round(agent_grid[0])), int(round(agent_grid[1])))
+
+        for idx in object_ids:
+            # object pixels in semantic map
+            object_points = (id_map == idx).nonzero()
+
+            # compute object center in grid coordinates
+            if type(object_points[0]) == np.ndarray:  # numpy
+                center = (object_points[0].astype(float).mean(),
+                        object_points[1].astype(float).mean())
+                object_center_list.append((round(center[0], 2), round(center[1], 2)))
+        
+        return object_center_list
+    
+    def get_astar_distance(data, from_id, to_id):
+        """
+        Returns the A* path length between two nodes (agent or object) by their IDs.
+        from_id: "agent" or object id (int)
+        to_id: object id (int)
+        Returns: (distance, reachable) or (None, False) if not found
+        """
+        if from_id == "agent":
+            # Search agent_to_objects edges
+            for edge in data["edges"]["agent_to_objects"]:
+                if edge["to"] == to_id:
+                    return edge["astar_cost"], edge["reachable"]
+            return None, False
+        else:
+            # Search object_to_object edges
+            for edge in data["edges"]["object_to_object"]:
+                if edge["from"] == from_id and edge["to"] == to_id:
+                    return edge["astar_cost"], edge["reachable"]
+                if edge["from"] == to_id and edge["to"] == from_id:
+                    return edge["astar_cost"], edge["reachable"]
+            return None, False
+
+    def get_object_to_object_edges(self, obj_ids=None):
+        """
+        Returns a list of dicts with A* distances between all unique pairs of currently visible target objects.
+        Only considers objects in self.current_seen_objects_id.
+        """
+        edges = []
+        id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
+
+        for i in range(len(obj_ids)):
+            from_id = obj_ids[i]
+            # Get center of the source object
+            from_points = (id_map == from_id).nonzero()
+            if type(from_points[0]) == np.ndarray:
+                from_center = (from_points[0].astype(float).mean(), from_points[1].astype(float).mean())
+            else:
+                from_center = (from_points[:, 0].float().mean().item(), from_points[:, 1].float().mean().item())
+            from_grid = (int(round(from_center[0])), int(round(from_center[1])))
+            print("from_id, from_grid:", from_id, from_grid)
+            for j in range(i + 1, len(obj_ids)):
+                to_id = obj_ids[j]
+                to_points = (id_map == to_id).nonzero()
+                if type(to_points[0]) == np.ndarray:
+                    to_center = (to_points[0].astype(float).mean(), to_points[1].astype(float).mean())
+                else:
+                    to_center = (to_points[:, 0].float().mean().item(), to_points[:, 1].float().mean().item())
+                to_grid = (int(round(to_center[0])), int(round(to_center[1])))
+
+                try:
+                    weight = get_astar_weight(sem_map=self.current_state['sem_map'],
+                                             origin=from_grid,
+                                             destination=to_grid)
+                    path = get_astar_path(weight=weight,
+                                          origin=from_grid,
+                                          destination=to_grid)
+                    if path is not None and len(path) > 1:
+                        dist = 0.0
+                        for (x1, y1), (x2, y2) in zip(path[:-1], path[1:]):
+                            dx, dy = abs(x2 - x1), abs(y2 - y1)
+                            dist += np.sqrt(2) if (dx == 1 and dy == 1) else 1.0
+                        edges.append({"from": from_id, "to": to_id, "astar_cost": round(dist, 2)})
+                    else:
+                        edges.append({"from": from_id, "to": to_id, "astar_cost": None})
+                except Exception:
+                    edges.append({"from": from_id, "to": to_id, "astar_cost": None})
+        return edges
+    
+    def format_object_to_object_edges(self):
+        """
+        Returns a string describing object-to-object A* distances in JSON format.
+        """
+        # Get edges between objects 
+        obj_ids = [int(obj['id']) for obj in self.object_list 
+                   if obj['category'] in self.target_objects]
+        print("obj_ids:", obj_ids)
+
+        # Get edges between objects and add reachability information
+        edges = self.get_object_to_object_edges(obj_ids=obj_ids)
+        
+        print("edges:", edges)
+        if not edges:
+            return "{}"
+        
+        # Get agent position and object locations
+        agent_pos = self.agent_pos
+        
+        # Build output dictionary
+        output = {
+            "agent": {
+                "pos_world": [agent_pos[0], 0.0, agent_pos[1]]
+            },
+            "objects": [],
+            "object_to_object": {}
+        }
+
+        id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
+
+        # Add objects information
+        for obj in self.object_list:
+            if obj['category'] in self.target_objects:
+                object_points = (id_map == int(obj['id'])).nonzero()
+                # compute object center in grid coordinates
+                if type(object_points[0]) == np.ndarray:  # numpy
+                    center = (object_points[0].astype(float).mean(),
+                            object_points[1].astype(float).mean())
+                output["objects"].append({
+                    "id": obj['id'],
+                    "name": obj['category'],
+                    "value": self.objects_info[obj['category']]['value'],  # Add object value
+                    "pos_grid": [round(center[0], 2), round(center[1], 2)],
+                })
+                output["object_to_object"][str(obj['id'])] = {}
+        
+        # Fill in object-to-object distances
+        for edge in edges:
+            from_id = str(edge["from"])
+            to_id = str(edge["to"])
+            
+            if edge["astar_cost"] is not None:
+                dist = str(edge["astar_cost"]) + " m"
+            else:
+                dist = "unreachable"
+
+            # Initialize nested dict if needed
+            if from_id not in output["object_to_object"]:
+                output["object_to_object"][from_id] = {}
+            if to_id not in output["object_to_object"]:
+                output["object_to_object"][to_id] = {}
+
+            output["object_to_object"][from_id][to_id] = dist
+            output["object_to_object"][to_id][from_id] = dist
+            
+            # Add self-distances
+            output["object_to_object"][from_id][from_id] = "0.0 m"
+            output["object_to_object"][to_id][to_id] = "0.0 m"
+        
+        return json.dumps(output, indent=2)
