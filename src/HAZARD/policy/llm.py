@@ -1,6 +1,7 @@
 import pdb
 import tiktoken
 from openai import OpenAI
+from anthropic import Anthropic
 
 client = OpenAI(api_key="")
 import json
@@ -13,6 +14,9 @@ import backoff
 import time
 import torch
 from src.HAZARD.policy.astar import get_astar_path, get_astar_weight
+
+# Update at the top of the file where constants are defined
+CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
 
 class SamplingParameters:
     def __init__(self, debug=False, max_tokens=64, t=0.7, top_p=1.0, n=1, logprobs=1, echo=False):
@@ -27,7 +31,7 @@ class SamplingParameters:
 
 class LLM:
     def __init__(self,
-                 source,  # 'huggingface' or 'openai'
+                 source,  # 'huggingface' or 'openai' or 'anthropic'
                  lm_id,
                  prompt_template_path,
                  cot,
@@ -55,7 +59,7 @@ class LLM:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano','gpt-5','ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ','ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4', 'o3'])
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano','gpt-5','ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ','ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz', 'ft:gpt-3.5-turbo-0125:usyd::CGcHaZKl', 'o3'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
 
@@ -118,11 +122,18 @@ class LLM:
                 "logprobs": sampling_parameters.logprobs,
                 "echo": sampling_parameters.echo,
             }
+        elif self.source == 'anthropic':
+            self.client = Anthropic(api_key="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")
+            self.sampling_params = {
+                "max_tokens": sampling_parameters.max_tokens,
+                "temperature": sampling_parameters.t,
+                "top_p": sampling_parameters.top_p,
+            }
         else:
             raise ValueError("invalid source")
 
         def lm_engine(source, lm_id):
-            @backoff.on_exception(backoff.expo, OpenAIError)
+            @backoff.on_exception(backoff.expo, Exception)
             def _generate(prompt, sampling_params):
                 usage = 0
                 if source == 'openai':
@@ -181,6 +192,34 @@ class LLM:
                                                                    skip_special_tokens=True)]
                     else:
                         raise ValueError("Can not use non-chat huggingface models")
+                elif source == 'anthropic':
+                    try:
+                        # Format prompt for Claude
+                        if isinstance(prompt, list):
+                            # Convert chat format to single string
+                            prompt_text = "\n\n".join([m["content"] for m in prompt])
+                        else:
+                            prompt_text = prompt
+                            
+                        response = self.client.messages.create(
+                            model=CLAUDE_MODEL,
+                            messages=[{
+                                "role": "user",
+                                "content": prompt_text
+                            }],
+                            max_tokens=sampling_params["max_tokens"],
+                            temperature=sampling_params["temperature"],
+                        )
+                        
+                        generated_samples = [response.content[0].text]
+                        # Estimate token usage
+                        usage = len(prompt_text.split()) * 0.001  # Rough estimation
+                        
+                    except Exception as e:
+                        print(f"Claude API error: {e}")
+                        raise e
+                        
+                    return generated_samples, usage
                 else:
                     raise ValueError("invalid source")
                 # generated_samples = [sample.strip().lower() for sample in generated_samples]
@@ -340,10 +379,10 @@ class LLM:
             else:
                 ps += f"status: {'Unknown'}\n"
         ps += 'Target objects previously seen:\n'
-        for obj, desc in zip(self.object_list, object_location_description_list):
+        for obj, desc, center in zip(self.object_list, object_location_description_list, object_center_list):
             if obj['category'] not in self.target_objects or obj['id'] in self.current_seen_objects_id:
                 continue
-            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance: {desc} m, "
+            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance: {desc} m, position: ({center[0]}, {center[1]}) "
             if self.task == 'fire':
                 if obj['id'] not in self.env_change_record:
                     ps += f"temperature: unknown\n"
@@ -525,9 +564,8 @@ class LLM:
         progress_desc = self.progress2text()
         action_history_desc = ", ".join(action_history[-10:] if len(action_history) > 10 else action_history)
         # object_edges_desc = self.format_object_to_object_edges()
-        # print("object_edges_desc", object_edges_desc)
-        # prompt = self.prompt_template.replace('$STATE$', progress_desc + "\n" + object_edges_desc)
-        prompt = self.prompt_template.replace('$STATE$', progress_desc)
+        prompt = self.prompt_template.replace('$STATE$', progress_desc + "\n")
+        # prompt = self.prompt_template.replace('$STATE$', progress_desc)
         prompt = prompt.replace('$ACTION_HISTORY$', action_history_desc + "\n")
         prompt = prompt.replace('$TARGET_OBJECTS$', self.objects_list2text() + "\n")
 

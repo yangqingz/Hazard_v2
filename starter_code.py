@@ -21,6 +21,7 @@ def main():
                         help="Language model id")
     parser.add_argument("--api_key_file", type=str, default="api_key.txt",
                         help="Path to API key file")
+    parser.add_argument('--lm_source', type=str, choices=['anthropic', 'huggingface', 'openai'], default='huggingface')
 
     args = parser.parse_args()
 
@@ -32,7 +33,8 @@ def main():
            max_test_episode=args.max_test_episode,
            run_on_test=True,
            lm_id=args.lm_id,
-           api_key_file=args.api_key_file)
+           api_key_file=args.api_key_file,
+           lm_source=args.lm_source)
            # You could also pass args.perceptional and args.effect_on_agents if submit supports them.
 
 if __name__ == "__main__":

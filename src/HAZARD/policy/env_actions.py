@@ -10,6 +10,13 @@ while os.path.basename(PATH) != "HAZARD":
     PATH = os.path.dirname(PATH)
 sys.path.append(PATH)
 
+
+client = OpenAI(api_key="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")
+import numpy as np
+import json
+import re
+import random
+
 from typing import List, Union, Optional
 import numpy as np
 from tdw.replicant.ik_plans.ik_plan_type import IkPlanType
@@ -280,7 +287,7 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, rese
             # Only A* path
             weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
             path = get_astar_path(weight=weight, origin=agent_pos, destination=target_pos)
-            # save_path_map(env, obs=obs, astar_path=path)
+            save_path_map(env, obs=obs, astar_path=path)
         
         if path is None or len(path) <= 1:
             env.controller.agents[0].collision_detection.avoid = True
@@ -543,6 +550,7 @@ def agent_drop(env, container: Optional[int]=None, env_type: str = "what?"):
     else:
         return False, "I don't not what happened but the drop failed"
     
+
 def agent_inference(env, inference_time: float, fps: int = 30):
     """
     Advance the TDW sim for the duration of your recorded inference time,
@@ -568,3 +576,161 @@ def agent_inference(env, inference_time: float, fps: int = 30):
 
     return True, "success"
 
+def id_reverse_renumbering(env, reverse_id):
+        for id in env.controller.manager.id_renumbering:
+            if env.controller.manager.id_renumbering[id] == reverse_id:
+                return id
+        return -1
+
+def update_object_status(obs, current_seen_objects_id):
+    env_change_record = {}
+    for o_id in current_seen_objects_id:
+        obj_id = int(o_id)
+        obj_mask = (obs["raw"]["seg_mask"] == obj_id)
+        # import pdb; pdb.set_trace()
+        if type(obj_mask) != np.ndarray:
+            temp = obs["raw"]["log_temp"] * obj_mask.cpu().numpy()
+            avg_temp = (temp.sum() / obj_mask.sum()).item()
+        else:
+            temp = obs["raw"]["log_temp"] * obj_mask
+            avg_temp = temp.sum() / obj_mask.sum()
+        if obj_id not in env_change_record:
+            env_change_record[str(obj_id)] = [avg_temp]
+        else:
+            env_change_record[str(obj_id)].append(avg_temp)
+    return env_change_record
+
+
+def get_target_info( target_list):
+        value_dict = json.load(open(os.path.join(PATH, "scenes/scene_configs/value.json")))
+        object_attribute_dict = {}
+        for target_category in target_list:
+            object_attribute_dict[target_category] = {}
+        for target_category in target_list:
+            if target_category in value_dict:
+                object_attribute_dict[target_category]['value'] = 5 if value_dict[target_category] == 1 else 1
+            else:
+                object_attribute_dict[target_category]['value'] = 1
+        fireproof_dict = json.load(open(os.path.join(PATH, "scenes/scene_configs/fire.json")))
+        for target_category in target_list:
+            if target_category in fireproof_dict:
+                object_attribute_dict[target_category]['fireproof'] = fireproof_dict[target_category]
+            else:
+                object_attribute_dict[target_category]['fireproof'] = 0
+        return object_attribute_dict
+
+
+def feedback_decision(feedback):
+    """
+    feedback_decision function takes the response from the OpenAI API and determines the next action based on the feedback.
+    """
+    default_result = True, "continue"
+    result = default_result
+
+    if "Explore" in feedback:
+        result = False, ("explore",0)
+    id = extract_numbers(feedback)
+    if "PICK UP" in feedback and len(id) > 0:
+        result = False, ("pick_up", int(id[0]))
+    if "Inappropriate" in feedback and len(id) > 0:
+        result = False, ("walk_to", int(id[0]))
+
+    if result[1][0] == "pick_up":
+        return result
+    weighted_choice_result  = weighted_choice(result, default_result)
+    return weighted_choice_result
+
+def extract_numbers(s):
+    # Find all digit sequences in the string
+    numbers = re.findall(r'\d+', s)
+    # Convert them to integers
+    return [int(num) for num in numbers]
+
+def weighted_choice(option1, option2, prob_option1=1):
+    result = random.choices([1, 0], weights=[prob_option1, 1 - prob_option1])[0]
+    if result == 1:
+        return option1
+    else:
+        return option2
+
+
+def llm_feedback(env, target_object_id, last_action_info, previous_seen):
+    prompt_template_path = "/home/yangqingzheng/Desktop/HAZARD/src/HAZARD/policy/llm_configs/feedback_prompt.csv"
+    df = pd.read_csv(prompt_template_path)
+    df.set_index('type', inplace=True)
+    prompt = df.loc['fire', 'prompt']
+    obs = env.controller._obs()
+    sem_map = obs["sem_map"]
+
+    object_location_description_list = []
+    id_map = sem_map['explored'] * sem_map['id']
+    explored_object_id_list = [int(idx) for idx in set(id_map.flatten()) if int(idx) != 0]
+    explored_object_id_list = list(set(explored_object_id_list))
+    explored_object_name_list = [env.controller.manager.segm.names[id_reverse_renumbering(env, idx)]
+                                     for idx in explored_object_id_list]
+    explored_object_category_list = [env.controller.manager.segm.categories[id_reverse_renumbering(env, idx)]
+                                         for idx in explored_object_id_list]
+    objects_list = [
+            {'name': name, 'category': category, 'id': str(idx)} for idx, name, category in zip(explored_object_id_list,
+                                                                          explored_object_name_list,
+                                                                          explored_object_category_list) if idx in id_map
+        ]
+    object_ids = [int(obj['id']) for obj in objects_list]
+
+    object_centers = []
+    for idx in object_ids:
+        object_points = (id_map == idx).nonzero()
+        if type(object_points[0]) == np.ndarray:
+            object_centers.append((object_points[0].astype(float).mean(),
+                                    object_points[1].astype(float).mean()))
+        else:
+            object_centers.append((object_points[:, 0].float().mean().item(),
+                                    object_points[:, 1].float().mean().item()))
+        agent_map = obs["goal_map"]
+        agent_points = (agent_map == -2).nonzero()
+        if type(agent_points[0]) == np.ndarray:
+            agent_pos = (agent_points[0].astype(float).mean(), agent_points[1].astype(float).mean())
+        else:
+            agent_pos = (agent_points[:, 0].float().mean().item(), agent_points[:, 1].float().mean().item())
+        # TODO use relative location to agent
+        for center in object_centers:
+            distance = np.array((agent_pos[0] - center[0], agent_pos[1] - center[1]))
+            distance = np.linalg.norm(distance)
+            # description = f"distance from me: {round(distance, 2)}"
+            description = f"{round(distance, 2)}"
+            object_location_description_list.append(description)
+
+    ps = ""
+    current_seen_objects_id = [str(x) for x in list(set(obs["raw"]['seg_mask'].flatten()))]
+    target_objects = env.controller.target
+    target_info = get_target_info(target_objects)
+    for obj, desc in zip(objects_list, object_location_description_list):
+        if obj['category'] not in target_objects or obj['id'] not in current_seen_objects_id:
+            continue
+        ps += f"name: {obj['category']}, id: {obj['id']}, value: {target_info[obj['category']]['value']}, distance: {desc} m, "
+        env_change_record = update_object_status(obs, current_seen_objects_id)
+        if obj['id'] not in env_change_record:
+            ps += f"temperature: unknown\n"
+        else:
+            ps += f"temperature: {str(round(np.exp(env_change_record[obj['id']][-1]), 2))} Celsius\n"
+
+    #previous action 
+    # action_history_desc = ", ".join(action_history[-10:] if len(action_history) > 10 else action_history)
+
+    prompt = prompt.replace('$CURRENT_ACTION$', '(walk to,' + str(target_object_id) + ")" + "\n")
+    prompt = prompt.replace('$OBS$', ps + "\n")
+    prompt = prompt.replace('$PRE$', last_action_info + "\n")
+    prompt = prompt.replace('$PRE_TAR$', str(previous_seen) + "\n")
+    # print("prompt:", prompt)
+    resp = client.chat.completions.create(model='gpt-3.5-turbo',
+    messages=[
+        {"role":"system", "content":"You are an expert roboticist., " },
+        {"role":"user",   "content":prompt}
+    ],
+    temperature=0.7,
+    max_tokens=64)
+    feedback = resp.choices[0].message.content
+    # print("feedback decision:", feedback)
+    feedback_des, action = feedback_decision(feedback)
+    print("action:", action)
+    return feedback_des, action, ps
