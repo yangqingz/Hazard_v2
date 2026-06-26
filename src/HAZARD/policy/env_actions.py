@@ -4,6 +4,12 @@ import time
 import cv2
 from src.HAZARD.policy.dstar.d_star_lite import get_dstar_weight, DStarLite
 from src.HAZARD.policy.dstar.grid import OccupancyGridMap
+from openai import OpenAI
+import numpy as np
+import json
+import re
+import random
+import pandas as pd
 
 PATH = os.path.dirname(os.path.abspath(__file__))
 while os.path.basename(PATH) != "HAZARD":
@@ -11,8 +17,7 @@ while os.path.basename(PATH) != "HAZARD":
 sys.path.append(PATH)
 
 
-client = OpenAI(api_key="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")
-import numpy as np
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 import json
 import re
 import random
@@ -207,7 +212,7 @@ def save_path_map(env,
  
 # def agent_walk_to(env: WindEnv, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0):
 def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, reset_arms: bool = False, arrived_at=1.0,
-                task=None, effect_on_agents=False, record_mode=False, use_dstar=False):
+                task=None, effect_on_agents=False, record_mode=False, use_dstar=False,feedback=False, previous_seen=None, target_object_id=None, last_action_info=None,):
     """Walk to target using either A* or D* path planning
     
     Returns:
@@ -218,6 +223,18 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, rese
     total_grid = 0.0
     last_pos = env.controller.agents[0].dynamic.transform.position.copy()
     grid_size = env.controller.sem_map.grid_size
+    if feedback:
+        feedback_des = True
+    else:
+        s_time = time.time()
+        feedback_des, action, previous_seen = llm_feedback(env, target_object_id,last_action_info, previous_seen,task=task)
+        print("feedback_des, action, previous_seen", feedback_des, action, previous_seen)
+        f_time = time.time()
+        elapsed_time = f_time - s_time
+        frame = elapsed_time
+        
+    if feedback_des == False:
+        return 'feedback' , action, total_grid, previous_seen
 
     while True:
         current_pos = env.controller.agents[0].dynamic.transform.position
@@ -240,12 +257,12 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, rese
         if np.linalg.norm(current_pos[[0, 2]] - target_pos[[0, 2]]) < arrived_at:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return True, "success", total_grid
+            return True, "success", total_grid, previous_seen
         
         if env.controller.frame_count - start_frame > max_steps:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "max steps reached", total_grid
+            return False, "max steps reached", total_grid, previous_seen
         
         agent_pos = env.controller.real_to_grid(current_pos)
         target_pos = env.controller.real_to_grid(target_pos)
@@ -255,7 +272,7 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, rese
         if isinstance(target, int) and not np.any(sem_map["id"] == env.controller.manager.id_renumbering[target]):
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "target not in vision or memory", total_grid
+            return False, "target not in vision or memory", total_grid, previous_seen
 
         # Get path using either D* or A*
         if use_dstar:
@@ -280,19 +297,19 @@ def agent_walk_to(env, target: Union[int, np.ndarray, List], max_steps=100, rese
             astar_path = get_astar_path(weight=astar_weight, origin=agent_pos, destination=target_pos)
             
             # Save both paths
-            save_path_map(env, obs=obs, astar_path=astar_path, dstar_path=dstar_path)
+            # save_path_map(env, obs=obs, astar_path=astar_path, dstar_path=dstar_path)
             
             path = dstar_path if dstar_path is not None and len(dstar_path) > 1 else astar_path
         else:
             # Only A* path
             weight = get_astar_weight(sem_map=sem_map, origin=agent_pos, destination=target_pos)
             path = get_astar_path(weight=weight, origin=agent_pos, destination=target_pos)
-            save_path_map(env, obs=obs, astar_path=path)
+            # save_path_map(env, obs=obs, astar_path=path)
         
         if path is None or len(path) <= 1:
             env.controller.agents[0].collision_detection.avoid = True
             env.controller.agents[0].collision_detection.objects = True
-            return False, "don't know, maybe out of bounds", total_grid
+            return False, "don't know, maybe out of bounds", total_grid, previous_seen
 
         # Move to next point in path
         next_point = path[1]  # D* returns path as list of tuples
@@ -572,6 +589,7 @@ def agent_inference(env, inference_time: float, fps: int = 30):
 
     while env.controller.frame_count <= ending_frame:
         env.controller.next_key_frame()
+        print("paused time")
         time.sleep(frame_interval)
 
     return True, "success"
@@ -637,8 +655,8 @@ def feedback_decision(feedback):
 
     if result[1][0] == "pick_up":
         return result
-    weighted_choice_result  = weighted_choice(result, default_result)
-    return weighted_choice_result
+    # weighted_choice_result  = weighted_choice(result, default_result)
+    return result
 
 def extract_numbers(s):
     # Find all digit sequences in the string
@@ -654,14 +672,15 @@ def weighted_choice(option1, option2, prob_option1=1):
         return option2
 
 
-def llm_feedback(env, target_object_id, last_action_info, previous_seen):
-    prompt_template_path = "/home/yangqingzheng/Desktop/HAZARD/src/HAZARD/policy/llm_configs/feedback_prompt.csv"
+def llm_feedback(env, target_object_id, last_action_info, previous_seen,task="fire"):
+    prompt_template_path = "/home/yangqingzheng/HAZARD/src/HAZARD/policy/llm_configs/feedback_prompt.csv"
     df = pd.read_csv(prompt_template_path)
     df.set_index('type', inplace=True)
     prompt = df.loc['fire', 'prompt']
     obs = env.controller._obs()
     sem_map = obs["sem_map"]
 
+    # def get_object_location_description(self):
     object_location_description_list = []
     id_map = sem_map['explored'] * sem_map['id']
     explored_object_id_list = [int(idx) for idx in set(id_map.flatten()) if int(idx) != 0]
@@ -676,8 +695,9 @@ def llm_feedback(env, target_object_id, last_action_info, previous_seen):
                                                                           explored_object_category_list) if idx in id_map
         ]
     object_ids = [int(obj['id']) for obj in objects_list]
-
     object_centers = []
+    
+    # def get_object_center(self):
     for idx in object_ids:
         object_points = (id_map == idx).nonzero()
         if type(object_points[0]) == np.ndarray:
@@ -704,33 +724,46 @@ def llm_feedback(env, target_object_id, last_action_info, previous_seen):
     current_seen_objects_id = [str(x) for x in list(set(obs["raw"]['seg_mask'].flatten()))]
     target_objects = env.controller.target
     target_info = get_target_info(target_objects)
+    
     for obj, desc in zip(objects_list, object_location_description_list):
         if obj['category'] not in target_objects or obj['id'] not in current_seen_objects_id:
             continue
         ps += f"name: {obj['category']}, id: {obj['id']}, value: {target_info[obj['category']]['value']}, distance: {desc} m, "
-        env_change_record = update_object_status(obs, current_seen_objects_id)
-        if obj['id'] not in env_change_record:
-            ps += f"temperature: unknown\n"
-        else:
-            ps += f"temperature: {str(round(np.exp(env_change_record[obj['id']][-1]), 2))} Celsius\n"
+        if task == "fire":
+            env_change_record = update_object_status(obs, current_seen_objects_id)
+            if obj['id'] not in env_change_record:
+                ps += f"temperature: unknown\n"
+            else:
+                ps += f"temperature: {str(round(np.exp(env_change_record[obj['id']][-1]), 2))} Celsius\n"
 
-    #previous action 
+    # previous action 
     # action_history_desc = ", ".join(action_history[-10:] if len(action_history) > 10 else action_history)
 
     prompt = prompt.replace('$CURRENT_ACTION$', '(walk to,' + str(target_object_id) + ")" + "\n")
     prompt = prompt.replace('$OBS$', ps + "\n")
     prompt = prompt.replace('$PRE$', last_action_info + "\n")
     prompt = prompt.replace('$PRE_TAR$', str(previous_seen) + "\n")
-    # print("prompt:", prompt)
-    resp = client.chat.completions.create(model='gpt-3.5-turbo',
-    messages=[
-        {"role":"system", "content":"You are an expert roboticist., " },
-        {"role":"user",   "content":prompt}
-    ],
-    temperature=0.7,
-    max_tokens=64)
+    print("prompt:", prompt)
+    # resp = client.chat.completions.create(model='gpt-5',
+    # messages=[
+    #     {"role":"system", "content":"You are an expert roboticist., " },
+    #     {"role":"user",   "content":prompt}
+    # ],
+    # temperature=0.7,
+    # max_tokens=64)
+    # gpt 5 
+    resp = client.chat.completions.create(model='gpt-5',
+                messages=[
+                    {"role":"system", "content":"You are an expert roboticist., " },
+                    {"role":"user",   "content":prompt}
+                ],
+                max_completion_tokens = 64,
+                verbosity = "medium",
+                reasoning_effort = "minimal",
+                n = 1,
+    )
     feedback = resp.choices[0].message.content
-    # print("feedback decision:", feedback)
+    print("feedback decision from llm prompt:", feedback)
     feedback_des, action = feedback_decision(feedback)
     print("action:", action)
     return feedback_des, action, ps

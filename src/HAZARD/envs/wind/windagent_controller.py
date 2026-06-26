@@ -242,7 +242,6 @@ class WindAgentController(WindController):
                 initial_status.append(None)
         if not have_ongoing_action:
             self.communicate([])
-            print("no ongoing action")
             return initial_status, []
         num_step = 0
         while True:

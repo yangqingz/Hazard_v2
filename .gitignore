@@ -22,3 +22,7 @@ results_old/*
 *.log
 baselines/*
 build/
+hf_cache/
+api_key.txt
+src/HAZARD/logs
+start.sh

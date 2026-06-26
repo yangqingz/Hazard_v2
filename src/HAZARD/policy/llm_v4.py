@@ -2,7 +2,7 @@ import pdb
 import tiktoken
 from openai import OpenAI
 
-client = OpenAI(api_key="")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 import json
 import os
 import pandas as pd
@@ -57,10 +57,12 @@ class LLMv4:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'gpt-5', 'o1-preview', 'gpt-4.1-nano','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz', 'ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4'])
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'gpt-5', 'o1-preview', 'gpt-4.1-nano','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz', 'ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
         self.picked_up_objects = []
+        self.last_action = None
+        
         if self.source == 'openai':
             try:
                 self.tokenizer = tiktoken.encoding_for_model(self.lm_id)
@@ -262,6 +264,7 @@ class LLMv4:
         self.picked_up_objects = []
         self.rescue_plan = []
         self.current_plan_index = 0
+        self.last_action = None
         
 
     def objects_list2text(self):
@@ -509,24 +512,41 @@ class LLMv4:
         action_result = processed_input['action_result']
         action_info = processed_input['action_info']
         self.update_object_status()
+        
+        # If last action was successful walk_to a target object, pick it up
+        print("last action:", self.last_action, "action_result:", action_result)
+        if (self.last_action != None and self.last_action[0] == "walk_to" and
+            action_result == True):
+            print("Last action was successful walk_to, attempting to pick up target object...")
+            # Get the object ID from the last walk_to action
+            target_id = self.last_action[1]
+            
+            # Verify this object is a target object and nearby
+            for obj in object_list:
+                if (int(obj['id']) == int(target_id) and 
+                    obj['category'] in self.target_objects):
+                    self.last_action = ("pick_up", target_id)
+                    return "pick_up", target_id
+        
         if self.task == 'wind':
             if len(processed_input['holding_objects']) == 0 and \
                     len(processed_input['nearest_object']) > 0 and \
                     processed_input['nearest_object'][0]['category'] in self.target_objects:
+                self.last_action = ("pick_up", processed_input['nearest_object'][0]['id'])
                 return "pick_up", processed_input['nearest_object'][0]['id']
             if len(processed_input['holding_objects']) > 0 and \
                     len(self.action_history) > 0 and \
                     self.action_history[-1].startswith('go put object into <shopping cart>') and \
                     processed_input['action_result']:
+                self.last_action = ("drop", None)
                 return "drop", self.action_history[-1].split('(')[1].split(')')[0]
         else:
             if len(processed_input['holding_objects']) > 0 and \
                     processed_input['holding_objects'][0]['category'] in self.target_objects:
                 self.picked_up_objects.append(int(processed_input['holding_objects'][0]['id']))
+                self.last_action = ("drop", None)
                 return "drop", None
-            if len(processed_input['nearest_object']) > 0 and \
-                    processed_input['nearest_object'][0]['category'] in self.target_objects:
-                return "pick_up", processed_input['nearest_object'][0]['id']
+            
 
         self.update_history_action_result(action_result, action_info)
         action_history = [f"{action} ({self.action_result_to_description(result, info)})" for action, result, info in
@@ -536,6 +556,7 @@ class LLMv4:
         import json
         with open(os.path.join(self.save_dir, f'{self.current_step:04d}_info.json'), 'w') as f:
             json.dump(info, f, indent=4)
+        self.last_action = action
         return action
 
     def run(self, current_step, holding_objects, nearest_object, object_list, action_history, agent_pos):

@@ -21,7 +21,9 @@ def main():
                         help="Language model id")
     parser.add_argument("--api_key_file", type=str, default="api_key.txt",
                         help="Path to API key file")
-    parser.add_argument('--lm_source', type=str, choices=['anthropic', 'huggingface', 'openai'], default='huggingface')
+    parser.add_argument('--lm_source', type=str, choices=['anthropic', 'huggingface', 'openai','google'], default='huggingface')
+
+    parser.add_argument("--inference", default=False)
 
     args = parser.parse_args()
 
@@ -34,7 +36,8 @@ def main():
            run_on_test=True,
            lm_id=args.lm_id,
            api_key_file=args.api_key_file,
-           lm_source=args.lm_source)
+           lm_source=args.lm_source,
+           inference=bool(args.inference))
            # You could also pass args.perceptional and args.effect_on_agents if submit supports them.
 
 if __name__ == "__main__":

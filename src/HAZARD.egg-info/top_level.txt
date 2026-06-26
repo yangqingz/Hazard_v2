@@ -1,0 +1,2 @@
+HAZARD
+__init__

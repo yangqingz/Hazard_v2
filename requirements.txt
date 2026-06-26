@@ -8,6 +8,8 @@ gym
 pyastar2d
 tiktoken
 openai
+anthropic
+google-generativeai
 backoff
 inflect
 streamlit

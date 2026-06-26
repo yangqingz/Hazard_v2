@@ -2,7 +2,7 @@ import pdb
 import tiktoken
 from openai import OpenAI
 
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 import json
 import os
 import pandas as pd
@@ -57,10 +57,11 @@ class LLMPredictor:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano'])
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano', 'gpt-5','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
         self.picked_up_objects = []
+        self.pickup_stats = {}
         if self.source == 'openai':
             try:
                 self.tokenizer = tiktoken.encoding_for_model(self.lm_id)
@@ -199,6 +200,8 @@ class LLMPredictor:
         self.rescue_plan = []
         self.current_plan_index = 0
         self.plan_complete = False
+        self.pickup_stats = {}
+        self.step_predictions = {}  # Maps object IDs to predicted steps to rescue
 
     def sleep(self, sleep_time=0.5):
         self.apikey_idx += 1
@@ -325,7 +328,7 @@ class LLMPredictor:
             # print(type(obj['id']), type(self.current_seen_objects_id[0]))
             if obj['category'] not in self.target_objects or obj['id'] not in self.current_seen_objects_id:
                 continue
-            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance to agent: {desc} m, position at: ({center[0]} , {center[1]}) "
+            ps += f"name: {obj['category']}, id: {obj['id']}, value: {self.objects_info[obj['category']]['value']}, distance to agent: {desc} m) "
             if self.task == 'fire':
                 if obj['id'] not in self.env_change_record:
                     ps += f"temperature: unknown\n"
@@ -427,22 +430,6 @@ class LLMPredictor:
                     self.env_change_record[str(obj_id)] = [avg_temp]
                 else:
                     self.env_change_record[str(obj_id)].append(avg_temp)
-            # if self.task == "fire":
-            #     avg_temp = np.exp(avg_temp)
-            #     text = f"object temperature is {str(round(avg_temp, 2))} Celsius"
-            # else:
-            #     text = f"water level at this object is {str(round(avg_temp, 2))} m"
-        # else:
-        # 	id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
-        # 	object_points = (id_map == obj_id).nonzero()
-        # 	if type(object_points[0]) == np.ndarray:
-        # 		object_center = (object_points[0].astype(float).mean(), object_points[1].astype(float).mean())
-        # 	else:
-        # 		object_center = (object_points[:, 0].float().mean().item(), object_points[:, 1].float().mean().item())
-        # 	if obj_id not in self.env_change_record:
-        # 		self.env_change_record[obj_id] = [object_center]
-        # 	else:
-        # 		self.env_change_record[obj_id].append(object_center)
 
     def get_available_plans(self):
         available_plans = []
@@ -517,7 +504,7 @@ class LLMPredictor:
         nearest_object = processed_input['nearest_object']
         action_result = processed_input['action_result']
         action_info = processed_input['action_info']
-        previous_walked_distance = processed_input['total_distance_walked']
+        self.pickup_stats = processed_input['pickup_stats']
         self.update_object_status()
         if self.task == 'wind':
             if len(processed_input['holding_objects']) == 0 and \
@@ -548,39 +535,48 @@ class LLMPredictor:
             json.dump(info, f, indent=4)
         return action
 
-    def run(self, current_step, holding_objects, nearest_object, object_list, action_history, agent_pos, previous_walked_distance=0.0):
-        """Modified to execute the rescue plan with distance tracking"""
-        
-        self.update_state(current_step, holding_objects, nearest_object, object_list, agent_pos, previous_walked_distance)
+    def run(self, current_step, holding_objects, nearest_object, object_list, action_history, agent_pos):
+        """Execute rescue plan with step monitoring and replanning"""
+        self.update_state(current_step, holding_objects, nearest_object, object_list, agent_pos)
         prompt = ""
         
-        # Generate new plan if:
-        # 1. No current plan
-        # 2. Reached max_plan_idx
-        # 3. Current target not reached within planned steps
+        # Initialize step tracking if not exists
+        if not hasattr(self, 'target_steps_spent'):
+            self.target_steps_spent = {}
+        
+        # Force replan conditions
         should_replan = False
+        replan_reason = ""
         
-        if len(self.rescue_plan) == 0:
-            print("No existing plan - generating new plan...")
+        if self.current_plan_index >= self.max_plan_idx:
             should_replan = True
+            replan_reason = f"Reached max plan index ({self.max_plan_idx})"
         
-        elif self.current_plan_index >= self.max_plan_idx:
-            print(f"Reached max plan index ({self.max_plan_idx}) - forcing replan...")
-            print(f"Total distance walked so far: {self.previous_walked_distance:.2f}")
-            should_replan = True
-            
-        elif self.current_plan_index < len(self.rescue_plan):
+        # Check if current target exceeded planned steps
+        elif len(self.rescue_plan) > 0 and self.current_plan_index < len(self.rescue_plan):
             current_target = self.rescue_plan[self.current_plan_index]
-            if not self.target_reached(current_target):
-                # Check if we've spent too many steps trying to reach this target
-                steps_on_target = current_step - self.last_plan_step if hasattr(self, 'last_plan_step') else 0
-                if steps_on_target > 100:  # Threshold for replanning
-                    print(f"Target {current_target} not reached after {steps_on_target} steps - replanning...")
+            
+            # Initialize start step for new target
+            if current_target not in self.target_steps_spent:
+                self.target_steps_spent[current_target] = 0
+
+            print(f"Current target: {current_target}, spent step {self.target_steps_spent[current_target]}, planned steps: {self.step_predictions.get(current_target, 'unknown')}")
+            # Get planned steps for current target
+            planned_steps = self.step_predictions.get(current_target)
+            if planned_steps is not None:
+                if self.target_steps_spent[current_target] > planned_steps and not self.target_reached(current_target):
                     should_replan = True
-        
-        if should_replan:
+                    replan_reason = f"Target {current_target} not reached after {self.target_steps_spent[current_target]} steps (planned: {planned_steps})"
+
+        # Generate new plan if needed
+        if should_replan or len(self.rescue_plan) == 0 or self.current_plan_index == len(self.rescue_plan):
+            if should_replan:
+                print(f"Replanning because: {replan_reason}")
+            
             self.rescue_plan = []
             self.current_plan_index = 0
+            self.target_steps_spent = {}  # Reset step tracking
+            
             self.rescue_plan, prompt = self.plan_rescue_sequence()
             
             # Filter out non-target object IDs
@@ -588,75 +584,94 @@ class LLMPredictor:
             target_ids = [int(obj['id']) for obj in target_objs]
             self.rescue_plan = [id for id in self.rescue_plan if int(id) in target_ids]
             
-            print(f"New rescue plan after filtering: {self.rescue_plan}")
-            self.last_plan_step = current_step
-
+            print(f"New rescue plan: {self.rescue_plan}")
+            print(f"Step predictions: {self.step_predictions}")
+        
         # Get next target from plan
         if self.current_plan_index < len(self.rescue_plan):
             target_id = self.rescue_plan[self.current_plan_index]
-            print("current target id:", target_id)
-            print("current plan index:", self.current_plan_index)
-            # Generate action to move toward/interact with current target
             action = self.get_action_for_target(target_id)
-            
+            if action[0] == "walk_to":
+                # Track steps spent on current target
+                if target_id not in self.target_steps_spent:
+                    self.target_steps_spent[target_id] = 1
+                self.target_steps_spent[target_id] += 1
             # Update plan progress
             if self.target_reached(target_id):
                 self.current_plan_index += 1
-                self.last_plan_step = current_step
-                
-            
+                # Reset step tracking for next target
+                if self.current_plan_index < len(self.rescue_plan):
+                    next_target = self.rescue_plan[self.current_plan_index]
             return action, {
-                "plan": self.rescue_plan, 
-                "current_target": target_id, 
+                "plan": self.rescue_plan,
+                "current_target": target_id,
                 "prompt": prompt,
-                "steps_on_target": current_step - self.last_plan_step
+                "step_predictions": self.step_predictions,
+                "steps_taken": current_step - self.target_steps_spent.get(target_id, current_step)
             }
         
-        return ("explore", None), {"plan": [], "current_target": None, "prompt": prompt}
+        return ("explore", None), {
+            "plan": [],
+            "current_target": None,
+            "prompt": prompt,
+            "step_predictions": {},
+            "steps_taken": 0
+        }
 
     def plan_rescue_sequence(self):
-        """Plan optimal rescue sequence considering distance already walked"""
-        object_edges = self.get_object_to_object_edges()
+        """
+        Plan the complete sequence of objects to rescue with step predictions
+        Returns:
+            - List of object IDs in optimal rescue order
+            - Prompt used for generation
+        """
         progress_desc = self.progress2text()
         
-        # Calculate walking efficiency if we have previous distance
-        efficiency = ""
-        if hasattr(self, 'previous_walked_distance') and self.previous_walked_distance > 0:
-            steps_taken = self.current_step - (self.last_plan_step if hasattr(self, 'last_plan_step') else 0)
-            if steps_taken > 0:
-                efficiency = f"\nPrevious walking efficiency: {self.previous_walked_distance/steps_taken:.2f} units per step"
-        
-        prompt = f"""Given the current state:
-{progress_desc}
+        # Format pickup stats information
+        pickup_stats_text = "\nPickup Statistics:\n"
+        for obj_id, stats in self.pickup_stats.items():
+            pickup_stats_text += f"Object {obj_id}:\n"
+            pickup_stats_text += f"- A* planned distance: {stats['astar_len'] if stats['astar_len'] else 'unknown'}\n" 
+            pickup_stats_text += f"- Steps taken: {stats['steps_to_pickup']}\n"
+            pickup_stats_text += f"- Success: {stats['pickup_success']}\n"
 
-Navigation Status:
-- Total distance walked so far: {self.previous_walked_distance:.2f} units{efficiency}
-- Current step: {self.current_step}
+        prompt = f"""
+        Suppose I am wearing fireproof suits and my house is on fire. I want to save as many valuable target objects as possible by picking them up and putting them into my bag. Given the current state and my previous actions, please help me choose the best available action to save as many valuable target objects as possible. All objects are denoted as <name> (id), such as <table> (712), and different objects have different values. Note objects lose their value once they start burning. The status of the objects previously seen may not be accurate any more. The final score is measured by the total value of the target objects I saved successfully.
 
-Object Distances:
-{self.format_object_to_object_edges()}
+        Given the current state: {progress_desc}
 
-Plan the optimal sequence to rescue remaining valuable objects. Consider:
-1. Previous walking performance and distance already covered
-2. Most efficient path to minimize additional walking distance
-3. Object values and priorities
-4. Current environmental conditions and object states
+        Previous Pickup Statistics and Actual Step Costs:
+        {pickup_stats_text}
 
-Output ONLY a comma-separated sequence of object IDs for the rescue plan.
-Example format: 1, 2, 41, 12, 3
-"""
+        Plan the optimal sequence to rescue remaining valuable objects, including predicted steps needed for each object.
+        Consider:
+        1. Object values and priorities
+        2. Previous performance (steps/distance) for similar distances
+        3. A* planned distances vs actual walked distances
+        4. Current object conditions and accessibility
+
+        Output ONLY pairs of (object_id, predicted_steps) in sequence order, separated by commas.
+        Example format: (1, 2), (23, 2), (12, 2)
+        THE MAIN GOAL IS TO PICK UP AS MANY VALUABLE TARGET OBJECTS AS POSSIBLE !!!!!!
+        """
+
         try:
             outputs, usage = self.generator([{"role": "user", "content": prompt}] if self.chat else prompt,
                                       self.sampling_params)
             
             plan_text = outputs[0]
-            print(f"Generated rescue plan text: {plan_text}")
+            print(f"Generated rescue plan with steps: {plan_text}")
             
-            object_sequence = list(map(int, re.findall(r"\d+", plan_text)))
+            # Parse (object_id, steps) pairs
+            matches = re.findall(r'\((\d+),\s*(\d+)\)', plan_text)
+            object_sequence = [int(obj_id) for obj_id, _ in matches]
+            step_predictions = {int(obj_id): int(steps) for obj_id, steps in matches}
             
             self.rescue_plan = object_sequence
+            self.step_predictions = step_predictions
             self.current_plan_index = 0
             self.plan_complete = False
+            
             return object_sequence, prompt
             
         except Exception as e:
@@ -678,23 +693,19 @@ Example format: 1, 2, 41, 12, 3
         """
         Check if the agent has reached and picked up/dropped the target object.
         """
-        print("Picked up objects:", self.picked_up_objects)
         if int(target_id) in self.picked_up_objects:
             return True
         return False
 
-    def update_state(self, current_step, holding_objects, nearest_object, object_list, agent_pos, previous_walked_distance=0.0):
+    def update_state(self, current_step, holding_objects, nearest_object, object_list, agent_pos):
         """
-        Update the internal state of the agent, including its position, held objects, current step and distance walked.
-        Args:
-            previous_walked_distance: Total distance walked by agent so far
+        Update the internal state of the agent, including its position, held objects, and the current step.
         """
         self.current_step = current_step
         self.holding_objects = holding_objects
         self.nearest_object = nearest_object
         self.object_list = object_list
         self.agent_pos = agent_pos
-        self.previous_walked_distance = previous_walked_distance  # Add this line
 
     def get_object_center(self):
         object_center_list = []
@@ -745,21 +756,13 @@ Example format: 1, 2, 41, 12, 3
                     return edge["astar_cost"], edge["reachable"]
             return None, False
 
-    def get_object_to_object_edges(self):
+    def get_object_to_object_edges(self, obj_ids=None):
         """
-        Returns a list of dicts with A* distances between all unique pairs (combinations, not permutations)
-        of target objects in self.object_list.
-        Example:
-        [
-          {"from": 12, "to": 37, "astar_cost": 45.3, "reachable": True},
-          ...
-        ]
+        Returns a list of dicts with A* distances between all unique pairs of currently visible target objects.
+        Only considers objects in self.current_seen_objects_id.
         """
         edges = []
-        # Only target objects
-        target_objs = [obj for obj in self.object_list if obj['category'] in self.target_objects]
         id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
-        obj_ids = [int(obj['id']) for obj in target_objs]
 
         for i in range(len(obj_ids)):
             from_id = obj_ids[i]
@@ -770,7 +773,7 @@ Example format: 1, 2, 41, 12, 3
             else:
                 from_center = (from_points[:, 0].float().mean().item(), from_points[:, 1].float().mean().item())
             from_grid = (int(round(from_center[0])), int(round(from_center[1])))
-
+            print("from_id, from_grid:", from_id, from_grid)
             for j in range(i + 1, len(obj_ids)):
                 to_id = obj_ids[j]
                 to_points = (id_map == to_id).nonzero()
@@ -792,61 +795,78 @@ Example format: 1, 2, 41, 12, 3
                         for (x1, y1), (x2, y2) in zip(path[:-1], path[1:]):
                             dx, dy = abs(x2 - x1), abs(y2 - y1)
                             dist += np.sqrt(2) if (dx == 1 and dy == 1) else 1.0
-                        edges.append({"from": from_id, "to": to_id, "astar_cost": round(dist, 2), "reachable": True})
+                        edges.append({"from": from_id, "to": to_id, "astar_cost": round(dist, 2)})
                     else:
-                        edges.append({"from": from_id, "to": to_id, "astar_cost": None, "reachable": False})
+                        edges.append({"from": from_id, "to": to_id, "astar_cost": None})
                 except Exception:
-                    edges.append({"from": from_id, "to": to_id, "astar_cost": None, "reachable": False})
+                    edges.append({"from": from_id, "to": to_id, "astar_cost": None})
         return edges
     
     def format_object_to_object_edges(self):
         """
-        Returns a string describing object-to-object A* distances for the prompt.
+        Returns a string describing object-to-object A* distances in JSON format.
         """
-        edges = self.get_object_to_object_edges()
-        if not edges:
-            return ""
-        s = "Object-to-object A* distances:\n"
-        for edge in edges:
-            if edge["reachable"]:
-                s += f"from {edge['from']} to {edge['to']}: {edge['astar_cost']} (reachable)\n"
-            else:
-                s += f"from {edge['from']} to {edge['to']}: unreachable\n"
-        return s
+        # Get edges between objects 
+        obj_ids = [int(obj['id']) for obj in self.object_list 
+                   if obj['category'] in self.target_objects]
 
-    def predict_steps_to_objects(self):
-        """
-        Ask LLM to predict steps needed to reach each object based on previous walking distance
-        Returns: String containing object IDs and predicted steps
-        """
-        object_edges = self.get_object_to_object_edges()
-        progress_desc = self.progress2text()
+        # Get edges between objects and add reachability information
+        edges = self.get_object_to_object_edges(obj_ids=obj_ids)
         
-        prompt = f"""Given the current state:
-        {progress_desc}
+        if not edges:
+            return "{}"
+        
+        # Get agent position and object locations
+        agent_pos = self.agent_pos
+        
+        # Build output dictionary
+        output = {
+            "agent": {
+                "pos_world": [agent_pos[0], 0.0, agent_pos[1]]
+            },
+            "objects": [],
+            "object_to_object": {}
+        }
 
-        Previous distance walked: {self.previous_walked_distance:.2f} units
+        id_map = self.current_state['sem_map']['explored'] * self.current_state['sem_map']['id']
 
-        And the distances between objects:
-        {self.format_object_to_object_edges()}
-
-        Based on the previous walking distance and current object positions, predict how many steps are needed to reach each visible target object.
-        Consider:
-        1. Previous walking efficiency (distance covered per step)
-        2. Current A* path distances to objects
-        3. Any obstacles or difficult terrain
-
-        Output ONLY pairs of (object_id, predicted_steps) separated by commas.
-        Example format: (1, 1), (23, 2), (12, 3)
-        """
-        try:
-            outputs, usage = self.generator([{"role": "user", "content": prompt}] if self.chat else prompt,
-                                      self.sampling_params)
+        # Add objects information
+        for obj in self.object_list:
+            if obj['category'] in self.target_objects:
+                object_points = (id_map == int(obj['id'])).nonzero()
+                # compute object center in grid coordinates
+                if type(object_points[0]) == np.ndarray:  # numpy
+                    center = (object_points[0].astype(float).mean(),
+                            object_points[1].astype(float).mean())
+                output["objects"].append({
+                    "id": obj['id'],
+                    "name": obj['category'],
+                    "value": self.objects_info[obj['category']]['value'],  # Add object value
+                    "pos_grid": [round(center[0], 2), round(center[1], 2)],
+                })
+                output["object_to_object"][str(obj['id'])] = {}
+        
+        # Fill in object-to-object distances
+        for edge in edges:
+            from_id = str(edge["from"])
+            to_id = str(edge["to"])
             
-            prediction_text = outputs[0]
-            print(f"Generated step predictions: {prediction_text}")
-            return prediction_text
+            if edge["astar_cost"] is not None:
+                dist = str(edge["astar_cost"]) + " m"
+            else:
+                dist = "unreachable"
+
+            # Initialize nested dict if needed
+            if from_id not in output["object_to_object"]:
+                output["object_to_object"][from_id] = {}
+            if to_id not in output["object_to_object"]:
+                output["object_to_object"][to_id] = {}
+
+            output["object_to_object"][from_id][to_id] = dist
+            output["object_to_object"][to_id][from_id] = dist
             
-        except Exception as e:
-            print(f"Error generating step predictions: {e}")
-            return ""
+            # Add self-distances
+            output["object_to_object"][from_id][from_id] = "0.0 m"
+            output["object_to_object"][to_id][to_id] = "0.0 m"
+        
+        return json.dumps(output, indent=2)

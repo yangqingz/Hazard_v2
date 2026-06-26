@@ -1,0 +1,31 @@
+type,prompt
+fire,"You are an agent deciding whether my current action in a fire evacuation scenario is appropriate. The goal is to save as many valuable target objects as possible by picking them up and putting them into my bag before they catch fire. Rules: 1. Each object is shown as <name> (id), e.g., <laptop> (712). Each object has a value. 2. Once an object starts burning, it loses all value. 3. A current action is considered Inappropriate if:  Other currently seen unburned targets has a higher value. Or there is a closer object with higher value or is very close to you. Instructions: 1. Use the history of actions and object states to decide if the current action is optimal. If the current action is appropriate, return Appropriate. If the current action is inappropriate and the previous action was a successful WALK, return PICK UP <previous object ID>. If the current action is inappropriate and the previous action was not a successful WALK, return Inappropriate <best object ID> where the ID is the most valuable unburned target currently seen. If no target is currently visible, return Appropriate. Response Format (MUST be one of):Appropriate, PICK UP <object id>, Inappropriate <object id> Please be TOUGH for more Inappropriate Action!!!!! Make sure return object id if Inappropriate!!!
+Previous Action:
+$PRE$
+Targets Previously Seen:
+$PRE_TAR$
+Current Action:
+$CURRENT_ACTION$
+Target Currently Seen:
+$OBS$
+Answer:"
+flood,"You are an agent deciding whether my current action in a flood evacuation scenario is appropriate. The goal is to save as many valuable target objects as possible by picking them up and putting them into my bag before they catch fire. Rules: 1. Each object is shown as <name> (id), e.g., <laptop> (712). Each object has a value. 2. Once an object starts burning, it loses all value. 3. A current action is considered Appropriate if: The target object for the action is not burning, AND No other currently seen unburned targets has a higher value. Instructions: 1. Use the history of actions and object states to decide if the current action is optimal. If the current action is appropriate, return Appropriate. If the current action is inappropriate and the previous action was a successful WALK, return PICK UP <previous object ID>. If the current action is inappropriate and the previous action was not a successful WALK, return Inappropriate <best object ID> where the ID is the most valuable unburned target currently seen. If no target is currently visible, return Appropriate. Response Format (MUST be one of):Appropriate, PICK UP <object id>, Inappropriate <object id> Please be TOUGH for more Inappropriate Action!!!!! Make sure return object id if Inappropriate!!!
+Target objects:
+$TARGET_OBJECTS$
+Current State:
+$STATE$
+Previous actions:
+$ACTION_HISTORY$
+Available actions:
+$AVAILABLE_ACTIONS$
+Answer:"
+wind,"I'm in an outdoor scene where an intense and turbulent wind is going on. I want to save as many valuable target objects as possible by picking them up and putting into some fixed shopping carts. Given current state, and my previous actions, please help me choose the best available action to save as many valuable target objects as possible. All objects are denoted as <name> (id), such as <table> (712), and different objects have different values.  Note all objects except shopping carts are moved by powerful wind forces every step and different objects may have different level of resistence to the wind forces. The distance from the objects previously seen may not be accurate any more. I should reason about the unknown object status to make the best decision. The final score is measured by the total value of target objects I put into shopping carts successfully.
+Target objects:
+$TARGET_OBJECTS$
+Current State:
+$STATE$
+Previous actions:
+$ACTION_HISTORY$
+Available actions:
+$AVAILABLE_ACTIONS$
+Answer:"

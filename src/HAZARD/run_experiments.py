@@ -130,7 +130,7 @@ def submit(
 
         # Parameters for examplar LLM or LLMv2 pipelines only
         max_tokens: int = 512,  # maximum max new tokens (only for examplar LLM or LLMv2 pipelines)
-        lm_source: str = "openai",  # 'openai' (use OpenAI API) or 'huggingface' (use Huggingface models)
+        lm_source: str = "openai",  # 'anthropic' or 'huggingface' or 'openai' (use OpenAI API) or 'huggingface' (use Huggingface models)
         # for 'openai' examplar LLM or LLMv2 pipelines only
         api_key: str = "",  # OpenAI api key
         api_key_file: str = "",  # instead of api_key, only if you want to use a file containing multiple keys
@@ -141,11 +141,11 @@ def submit(
         # parameters for making a demo
         record_with_agents: bool = False,  # making demo with an agent
         inference: bool = False,  # record inference time
-        use_dstar: bool = False # use dstar for path planning
+        use_dstar: bool = False  # use dstar for path planning
 ):
     # args = get_args()
     # debug only open when developing the challenge
-    debug = False
+    debug = True
     # grid size for semantic map
     grid_size = 0.1
 

@@ -2,8 +2,7 @@ import pdb
 import tiktoken
 from openai import OpenAI
 from anthropic import Anthropic
-
-client = OpenAI(api_key="")
+import google.generativeai as genai
 import json
 import os
 import pandas as pd
@@ -16,7 +15,8 @@ import torch
 from src.HAZARD.policy.astar import get_astar_path, get_astar_weight
 
 # Update at the top of the file where constants are defined
-CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
+CLAUDE_MODEL = "claude-sonnet-4-6"
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class SamplingParameters:
     def __init__(self, debug=False, max_tokens=64, t=0.7, top_p=1.0, n=1, logprobs=1, echo=False):
@@ -59,10 +59,10 @@ class LLM:
         self.cot = cot
         self.source = source
         self.lm_id = lm_id
-        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano','gpt-5','ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ','ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz', 'ft:gpt-3.5-turbo-0125:usyd::CGcHaZKl', 'o3'])
+        self.chat = any(tok in lm_id for tok in ['gpt-3.5-turbo', 'gpt-4', 'o1-preview', 'gpt-4.1-nano','gpt-5','ft:gpt-3.5-turbo-0125:usyd::CEyvkoyQ','ft:gpt-3.5-turbo-0125:usyd::CDiV1ta4','ft:gpt-3.5-turbo-0125:usyd::CDRFP0Xz', 'ft:gpt-3.5-turbo-0125:usyd::CGcHaZKl', 'o3', 'gemini-3.5-flash'])
         self.total_cost = 0
         self.total_max_tokens = total_max_tokens - sampling_parameters.max_tokens
-
+        print("current model:", self.lm_id)
         if self.source == 'openai':
             try:
                 self.tokenizer = tiktoken.encoding_for_model(self.lm_id)
@@ -123,9 +123,17 @@ class LLM:
                 "echo": sampling_parameters.echo,
             }
         elif self.source == 'anthropic':
-            self.client = Anthropic(api_key="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")
+            self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
             self.sampling_params = {
                 "max_tokens": sampling_parameters.max_tokens,
+                "temperature": sampling_parameters.t,
+                "top_p": sampling_parameters.top_p,
+            }
+        elif self.source == 'google':
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            self.model = genai.GenerativeModel(self.lm_id)
+            self.sampling_params = {
+                "max_output_tokens": sampling_parameters.max_tokens,
                 "temperature": sampling_parameters.t,
                 "top_p": sampling_parameters.top_p,
             }
@@ -202,7 +210,7 @@ class LLM:
                             prompt_text = prompt
                             
                         response = self.client.messages.create(
-                            model=CLAUDE_MODEL,
+                            model=lm_id,
                             messages=[{
                                 "role": "user",
                                 "content": prompt_text
@@ -219,6 +227,29 @@ class LLM:
                         print(f"Claude API error: {e}")
                         raise e
                         
+                    return generated_samples, usage
+                elif source == 'google':
+                    try:
+                        if isinstance(prompt, list):
+                            prompt_text = "\n\n".join([m["content"] for m in prompt])
+                        else:
+                            prompt_text = prompt
+                        
+                        response = self.model.generate_content(
+                            prompt_text,
+                            generation_config=genai.types.GenerationConfig(
+                                **sampling_params
+                            )
+                        )
+                        
+                        generated_samples = [response.text]
+                        # Estimate token usage
+                        usage = len(prompt_text.split()) * 0.001 # Rough estimation
+                        
+                    except Exception as e:
+                        print(f"Gemini API error: {e}")
+                        raise e
+                    
                     return generated_samples, usage
                 else:
                     raise ValueError("invalid source")
