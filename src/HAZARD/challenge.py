@@ -291,6 +291,10 @@ class Challenge:
             action_result = False
             action_info = ""
             total_steps_to_pickup = 0
+            Feedback = True
+            current_action = None 
+            last_action_info = ""
+            previous_seen = ""
             self.env.controller.communicate([])
             if "demo" in self.output_dir:
                 for i in range(1500):
@@ -333,13 +337,27 @@ class Challenge:
 
                 ## main function to get action from agent
                 start_time = time.time()
-                current_action = agent.choose_target(state, processed_input)
+                potential_action = agent.choose_target(state, processed_input)
                 end_time = time.time()
                 elapsed_time = end_time - start_time
+                print("potential action ISSSSSSSSSS: ", potential_action)
 
+                # This part is for updating the frame while the agent is doing inference
                 if inference:
                     agent_inference(self.env, elapsed_time)
+                    print("inference time", elapsed_time)
 
+                # Feedback is used to indicate whether the agent needs to wait for feedback from the environment
+                # If Feedback is True, the agent will wait for the next step to get the feedback
+                # If Feedback is False, the agent will execute the action immediately
+                print("index 0", potential_action[0])
+                if Feedback == False or potential_action[0] == "pick_up" or potential_action[0] == "drop" or current_action == None:
+                    current_action = potential_action
+                    Feedback = False
+                else:
+                    print("NOOO PONTENTIAL ACTION USED:< BASED ON FEEDBACK:", current_action)
+                    Feedback = True
+                
                 if isinstance(current_action, int) and agent.agent_type in ["rl", "random"]:
                     current_action = self.env.get_challenge_action(current_action)
                 print(current_action)
@@ -348,6 +366,7 @@ class Challenge:
                         obj_name = self.env.controller.id2name[self.id_reverse_renumbering(self.nearest_object)]
                         print(f"step {self.env.controller.comm_counter} action {current_action} {obj_name} "
                             f"{str(self.id_reverse_renumbering(self.nearest_object))}", file=action_logger)
+                        Feedback = False
                     except Exception as e:
                         print("should pick up", self.nearest_object, " with a id", self.id_reverse_renumbering(self.nearest_object),file=action_logger)
 
@@ -375,21 +394,21 @@ class Challenge:
                     self.pickup_stats[int(current_action[1])]["steps_to_pickup"] += 1
                 
                     if self.record_with_agents:
-                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                               max_steps=100, reset_arms=False, arrived_at=1,
-                                                               task=self.env_name, record_mode=True,
-                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
+                        action_result, action_info, distance, previous_seen = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                                                               max_steps=100, reset_arms=False, arrived_at=1, feedback=Feedback,
+                                                               task=self.env_name, record_mode=True,target_object_id=int(current_action[1]),last_action_info=last_action_info,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar, previous_seen=previous_seen)
                     elif self.env_name in ["fire", "flood"]:
-                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
+                        action_result, action_info, distance, previous_seen = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])), feedback=Feedback,
+                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,target_object_id=int(current_action[1]),last_action_info=last_action_info,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar, previous_seen=previous_seen)
                     else:
-                        action_result, action_info, distance = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
-                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,
-                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar)
+                        action_result, action_info, distance, previous_seen = agent_walk_to(self.env, target=self.id_reverse_renumbering(int(current_action[1])),
+                                                           max_steps=100, reset_arms=False, arrived_at=1, task=self.env_name,target_object_id=int(current_action[1]),last_action_info=last_action_info,
+                                                               effect_on_agents=self.effect_on_agents, use_dstar=self.use_dstar, previous_seen=previous_seen, feedback=Feedback)
                     total_steps_to_pickup += 1
-                    
-                    if action_result:
+
+                    if action_result == True:
                         self.nearest_object = int(current_action[1])
                     else:
                         self.nearest_object = None
@@ -452,6 +471,16 @@ class Challenge:
                 else:
                     assert False, f"action {current_action} not available"
                 local_finish = "success" if action_result else f"fail, because {action_info}"
+                
+                if action_result == 'feedback':
+                    last_action_info = "The previous action is " + str(current_action)
+                    current_action = action_info
+                    Feedback = True
+                    print("change the action to", current_action)
+                else:
+                    Feedback = False
+                    last_action_info = str(current_action) + " " + str(action_result) +" because " + str(action_info)
+                print("Feedback is", Feedback)
                 self.logger.info(
                     f"Executing step {self.step_num} for episode: {i}, action: {current_action}, finish: {local_finish}, elapsed_time: {elapsed_time:.2f}")
 
